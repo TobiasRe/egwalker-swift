@@ -588,6 +588,10 @@ final class ItemTree {
                 for i in 0..<len(node) {
                     let s = span(node, i)
                     precondition(s.len > 0, "empty span")
+                    // Compactness: every edit path coalesces, so two neighbours in a
+                    // leaf must never be mergeable. (Catches "correct but bloated"
+                    // bugs that output-only tests can't see.)
+                    if i > 0 { precondition(!Self.canMerge(span(node, i - 1), s), "uncoalesced neighbours") }
                     precondition(s.cur >= -1, "bad state")
                     if !s.isPlaceholderSpan {
                         for k in 0..<Int(s.len) { precondition(leafOf[s.lv + k - lvBase] == node, "stale leafOf") }

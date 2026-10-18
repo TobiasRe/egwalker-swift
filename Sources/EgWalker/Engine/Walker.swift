@@ -41,10 +41,16 @@ final class Walker {
     @exclusivity(unchecked) private var diffQueue = UnsafeMutablePointer<Int>.allocate(capacity: 64)
     @exclusivity(unchecked) private var diffQueueCap = 64
     @exclusivity(unchecked) private var diffAdvance = ContiguousArray<LVRange>()
-    /// delTarget[lv - trackBase] = LV of the item deleted by delete event `lv`.
-    @exclusivity(unchecked) private var delTarget: UnsafeMutablePointer<Int>?
+    /// delTarget[lv - trackBase] = the item deleted by delete event `lv`, encoded
+    /// as Int32 to halve memory: `target - trackBase` for real items, and
+    /// `-(k + 1)` for placeholder k. (The paper's A2 trace tracks ~700k events at
+    /// once; at 8 bytes per entry this array alone was 5.6 MB.)
+    @exclusivity(unchecked) private var delTarget: UnsafeMutablePointer<Int32>?
     @exclusivity(unchecked) private var delTargetCapacity = 0
     @exclusivity(unchecked) private var trackBase = 0
+    /// False while replaying already-applied events to rebuild CRDT state
+    /// (incremental merge): the tracker changes, the document must not.
+    @exclusivity(unchecked) private var docEnabled = true
     /// One-element parent list, for slices that start mid-entry.
     private let oneParent = UnsafeMutablePointer<LV>.allocate(capacity: 1)
 
@@ -222,6 +228,73 @@ final class Walker {
         }
     }
 
+    // MARK: - Incremental merge
+
+    /// Brings `doc` (currently at `branchVersion`) up to `mergeVersion`.
+    ///
+    /// This is Eg-walker's real-world operation: you have a document open, new
+    /// events arrive. Only events after the latest common ancestor of the two
+    /// versions matter:
+    /// - *conflict* events (already in the document, but concurrent with new
+    ///   ones) are replayed into the CRDT only, to rebuild the state the new
+    ///   events must be transformed against;
+    /// - *new* events are then applied through the CRDT to the document.
+    /// Placeholders stand in for the document at the common ancestor. Like the
+    /// reference implementation we use `max(branchVersion) + 1` of them, an upper
+    /// bound on its length; spare ones sit at the end and never move text.
+    func merge(branchVersion: [LV], mergeVersion: [LV]) -> [LV] {
+        let cg = oplog.cg
+        var newOps: [LVRange] = [], conflictOps: [LVRange] = []
+        let common = cg.findConflicting(branchVersion, mergeVersion) { span, flag in
+            if flag == .b {
+                if let last = newOps.last, last.start == span.end { newOps[newOps.count - 1].start = span.start }
+                else { newOps.append(span) }
+            } else {
+                if let last = conflictOps.last, last.start == span.end { conflictOps[conflictOps.count - 1].start = span.start }
+                else { conflictOps.append(span) }
+            }
+        }
+        let resultVersion = cg.findDominators(branchVersion + mergeVersion)
+        if newOps.isEmpty { return resultVersion }
+        newOps.reverse(); conflictOps.reverse()
+        let base = Swift.min(conflictOps.first?.start ?? Int.max, newOps[0].start)
+
+        oplog.cg.entries.withUnsafeBufferPointer { e in
+        oplog.cg.parentPool.withUnsafeBufferPointer { p in
+        oplog.runs.withUnsafeBufferPointer { r in
+        oplog.content.withUnsafeBufferPointer { c in
+            entries = e; parentPool = p; runs = r; content = c
+            defer {
+                entries = .init(start: nil, count: 0); parentPool = .init(start: nil, count: 0)
+                runs = .init(start: nil, count: 0); content = .init(start: nil, count: 0)
+            }
+            startTracking(at: base, versionSet: common, capacity: oplog.count - base,
+                          placeholders: (branchVersion.max() ?? -1) + 1)
+            docEnabled = false
+            for range in conflictOps { applyRange(range) }
+            docEnabled = true
+            for range in newOps { applyRange(range) }
+        }}}}
+        stopTracking()
+        return resultVersion
+    }
+
+    /// Applies every event in `range` through the tracker, entry by entry.
+    private func applyRange(_ range: LVRange) {
+        var i = entryIndex(range.start)
+        while i < entries.count && entries[i].version < range.end {
+            let e = entries[i]
+            let s = Swift.max(range.start, e.version), t = Swift.min(range.end, e.vEnd)
+            if s == e.version {
+                trackedApply(s, t, parents: parents(e))
+            } else {
+                oneParent.pointee = s - 1
+                trackedApply(s, t, parents: UnsafeBufferPointer(start: oneParent, count: 1))
+            }
+            i += 1
+        }
+    }
+
     // MARK: - Traversal order
 
     /// Applies the entries `[firstEntry, endEntry)` (the first one starting at
@@ -346,6 +419,12 @@ final class Walker {
     // MARK: - Tracking
 
     private func startTracking(at base: LV, version: LV, capacity: Int) {
+        startTracking(at: base, versionSet: version >= 0 ? [version] : [], capacity: capacity, placeholders: doc.count)
+    }
+
+    /// Starts a CRDT session whose events all have LV >= `base`, at `versionSet`,
+    /// with `placeholders` items standing in for the document at that version.
+    private func startTracking(at base: LV, versionSet: [LV], capacity: Int, placeholders: Int) {
         tracking = true
         stats.trackingSessions += 1
         trackBase = base
@@ -360,13 +439,12 @@ final class Walker {
             delTarget = .allocate(capacity: capacity)
             delTargetCapacity = capacity
         }
-        let docLen = doc.count
-        if docLen > 0 {
-            t.insertSpan(Span(lv: placeholderBase, originLeft: -1, rightParent: -1, len: Int32(docLen),
+        if placeholders > 0 {
+            t.insertSpan(Span(lv: placeholderBase, originLeft: -1, rightParent: -1, len: Int32(placeholders),
                               cur: ItemState.inserted, endDeleted: false), leaf: t.firstLeaf, at: 0)
         }
         curVersion.removeAll()
-        if version >= 0 { curVersion.append(version) }
+        for v in versionSet { curVersion.append(v) }
     }
 
     private func stopTracking() {
@@ -485,6 +563,13 @@ final class Walker {
     }
 
     /// Retreats (-1) or advances (+1) every event in `r`.
+    @inline(__always) private func encodeTarget(_ lv: LV) -> Int32 {
+        isPlaceholder(lv) ? Int32(-(lv - placeholderBase) - 1) : Int32(lv - trackBase)
+    }
+    @inline(__always) private func decodeTarget(_ v: Int32) -> LV {
+        v >= 0 ? trackBase + Int(v) : placeholderBase + Int(-v - 1)
+    }
+
     private func applyDelta(_ r: LVRange, _ delta: Int32) {
         let tree = self.tree!
         if delta < 0 { stats.retreated += r.count } else { stats.advanced += r.count }
@@ -496,15 +581,16 @@ final class Walker {
             case .delete:
                 // Group consecutive targets (ascending or descending) into ranges.
                 let dt = delTarget!
+                @inline(__always) func target(_ k: Int) -> LV { decodeTarget(dt[k - trackBase]) }
                 var i = a
                 while i < b {
-                    let t0 = dt[i - trackBase]
+                    let t0 = target(i)
                     var j = i + 1
-                    if j < b && dt[j - trackBase] == t0 + 1 {
-                        while j < b && dt[j - trackBase] == t0 + (j - i) { j += 1 }
+                    if j < b && target(j) == t0 + 1 {
+                        while j < b && target(j) == t0 + (j - i) { j += 1 }
                         tree.addToCur(lv: t0, count: j - i, delta: delta)
-                    } else if j < b && dt[j - trackBase] == t0 - 1 {
-                        while j < b && dt[j - trackBase] == t0 - (j - i) { j += 1 }
+                    } else if j < b && target(j) == t0 - 1 {
+                        while j < b && target(j) == t0 - (j - i) { j += 1 }
                         tree.addToCur(lv: t0 - (j - i - 1), count: j - i, delta: delta)
                     } else {
                         tree.addToCur(lv: t0, count: 1, delta: delta)
@@ -579,7 +665,7 @@ final class Walker {
         } else {
             tree.insertSpan(newSpan, leaf: leaf, at: idx)
         }
-        doc.insert(text, at: cursor.endPos)
+        if docEnabled { doc.insert(text, at: cursor.endPos) }
     }
 
     /// YjsMod / Fugue integration, at span granularity. See ReferenceWalker.integrate.
@@ -636,9 +722,9 @@ final class Walker {
             let targetStart = s.lv + off
             for j in 0..<m {
                 let delLV = reversed ? lv + n - 1 - (k + j) : lv + k + j
-                dt[delLV - trackBase] = targetStart + j
+                dt[delLV - trackBase] = encodeTarget(targetStart + j)
             }
-            if !s.endDeleted { doc.delete(at: docPos, count: m) }
+            if !s.endDeleted && docEnabled { doc.delete(at: docPos, count: m) }
             tree.modifySpan(leaf: leaf, idx: idx) { $0.cur = 1; $0.endDeleted = true }
             // Keep the tree compact: deleted runs merge with deleted neighbours.
             tree.tryMergeRight(leaf: leaf, idx: idx)
@@ -723,8 +809,22 @@ extension OpLog {
 /// A checked-out document: the text produced by replaying an oplog.
 public final class TextDocument: @unchecked Sendable {
     let buffer: GapBuffer
-    public let version: [LV]
+    public private(set) var version: [LV]
     init(buffer: GapBuffer, version: [LV]) { self.buffer = buffer; self.version = version }
+
+    /// An empty document (version: the root).
+    public convenience init() { self.init(buffer: GapBuffer(), version: []) }
+
+    /// Merges everything in `oplog` that this document hasn't seen yet. Only
+    /// events concurrent with the new ones are revisited, so the cost depends on
+    /// the size of the merge, not the size of the history.
+    ///
+    /// `oplog` must contain every event this document has already seen (i.e. be
+    /// the same oplog, or one it was synced into).
+    public func merge(_ oplog: OpLog, upTo mergeVersion: [LV]? = nil) {
+        let walker = Walker(oplog: oplog, doc: buffer)
+        version = walker.merge(branchVersion: version, mergeVersion: mergeVersion ?? oplog.cg.heads)
+    }
     /// Length in Unicode scalars.
     public var count: Int { buffer.count }
     public var scalars: [Unicode.Scalar] { buffer.scalars }

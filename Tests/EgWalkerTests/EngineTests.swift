@@ -12,6 +12,38 @@ struct EngineTests {
         #expect(oplog.checkout().text == "i there")
     }
 
+    /// The example from README.md, verbatim.
+    @Test func readmeExample() {
+        var alice = OpLog(), bob = OpLog()
+        alice.insert(agent: "alice", at: 0, "Hello")
+        bob.merge(from: alice)
+        alice.insert(agent: "alice", at: 5, " world")
+        bob.insert(agent: "bob", at: 0, "Oh, ")
+        alice.merge(from: bob)
+        bob.merge(from: alice)
+        #expect(alice.checkout().text == bob.checkout().text)
+        #expect(alice.checkout().text == "Oh, Hello world")
+    }
+
+    /// Incremental merge: keep a document open while remote edits arrive.
+    @Test func incrementalDocumentMerge() throws {
+        let data = try TraceImport.loadDTExport(Fixtures.url("git-makefile-raw.json"))
+        let full = TraceImport.oplog(from: data)
+        // Replay the history in 10 slices into one long-lived document.
+        let doc = TextDocument()
+        var heads: [LV] = []
+        let step = Swift.max(1, full.count / 10)
+        var v = step - 1
+        while v < full.count - 1 {
+            heads = full.cg.findDominators(heads + [v])
+            doc.merge(full, upTo: [v])
+            v += step
+        }
+        doc.merge(full)
+        #expect(doc.text == data.endContent)
+        #expect(doc.version == full.cg.heads)
+    }
+
     @Test func concurrentInserts() {
         var a = OpLog(), b = OpLog()
         a.insert(agent: "alice", at: 0, "A")

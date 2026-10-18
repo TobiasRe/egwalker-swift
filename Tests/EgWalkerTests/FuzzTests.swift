@@ -21,6 +21,8 @@ struct FuzzTests {
         var agent: String
         var oplog = OpLog()
         var text: [Unicode.Scalar] = []
+        /// A long-lived document, updated only through incremental merges.
+        var doc = TextDocument()
     }
 
     static let alphabet: [Unicode.Scalar] = Array("abcdefghijklmnopqrstuvwxyz ".unicodeScalars)
@@ -84,6 +86,12 @@ struct FuzzTests {
                     return
                 }
                 replicas[r].text = Array(optimized.unicodeScalars)
+                // Incremental merge into the long-lived document must agree.
+                replicas[r].doc.merge(replicas[r].oplog)
+                if replicas[r].doc.text != reference {
+                    Issue.record("seed \(seed) step \(step): incremental merge != reference\ninc: \(replicas[r].doc.text.debugDescription)\nref: \(reference.debugDescription)")
+                    return
+                }
             }
             // Local text must always agree with a fresh checkout.
             if step % 7 == 0 {
