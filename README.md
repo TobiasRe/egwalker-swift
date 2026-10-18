@@ -33,7 +33,14 @@ assert(alice.checkout().text == bob.checkout().text)  // "Oh, Hello world"
 ```
 
 `OpLog` is the only state you need to persist or sync. `checkout()` replays it into text;
-`checkoutDocument()` does the same without materialising a `String`.
+`checkoutDocument()` does the same without materialising a `String`. For an open document,
+`TextDocument.merge(oplog)` applies only what's new, revisiting just the concurrent events:
+
+```swift
+let doc = alice.checkoutDocument()
+// ... more events arrive in `alice` via merge(from:) ...
+doc.merge(alice)
+```
 
 ## How it works (short version)
 
@@ -65,7 +72,10 @@ Scripts/mutate.py --limit 160               # mutation testing (see Benchmarks/m
 - **Real histories:** git imports of nodejs and git, plus the paper's S1–A2 traces exported
   with their original agent names.
 - **Mutation testing:** a small project-specific runner (`Scripts/mutate.py`) checks that the
-  suite actually notices plausible bugs.
+  suite actually notices plausible bugs. 110 sampled mutants: 84.5% killed on the first run;
+  after triage and 5 new tests, 90% killed and every remaining survivor is equivalent,
+  metrics-only or performance-only ([triage](Benchmarks/mutation/TRIAGE.md)).
+- **AddressSanitizer:** the full suite runs clean under ASan.
 
 ## Benchmarks
 

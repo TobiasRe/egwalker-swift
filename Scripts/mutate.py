@@ -36,7 +36,8 @@ TARGETS = [
 
 # The test gate: everything that is fast but has teeth (~12s in debug).
 GATE_FILTER = ("conformanceSuite|rawTraces|differentialTwoReplicas|differentialManyReplicas"
-               "|dtExported|agentNames|simpleLocalEditing|concurrentInserts")
+               "|dtExported|agentNames|simpleLocalEditing|concurrentInserts"
+               "|MutationGapTests|incrementalMergeMatchesCheckout|incrementalDocumentMerge")
 GATE_ENV = {"EGWALKER_FUZZ_ITERS": "60"}
 
 # (name, regex, replacement). Regexes run on the code part of a line only.
@@ -178,8 +179,71 @@ def report(results_path, md_path):
             f.write(f"- `{r['file'].split('/')[-1]}:{r['line']}` {r['op']}: `{r['source'].strip()}`\n")
     print(open(md_path).read())
 
+def verify(outdir, keys):
+    """Re-applies selected survivors (matched by file + original source line, so
+    it survives line shifts) and runs the current gate. Used to confirm that a
+    newly written test really kills the mutant it targets."""
+    rs = [json.loads(l) for l in open(outdir / "results.jsonl")]
+    picked = [r for r in rs if r["status"] == "survived" and f"{r['file'].split('/')[-1]}:{r['line']}" in keys]
+    out = []
+    for c in picked:
+        path = ROOT / c["file"]
+        original = path.read_text()
+        lines = original.splitlines(keepends=True)
+        idx = next(i for i, l in enumerate(lines) if l.rstrip("\n") == c["source"])
+        line = lines[idx]
+        lines[idx] = line[:c["col"]] + c["rep"] + line[c["end"]:]
+        try:
+            path.write_text("".join(lines))
+            rc, _ = run(["swift", "build", "--build-tests"], 900)
+            if rc != 0: status = "invalid"
+            else:
+                rc, _ = run(["swift", "test", "--skip-build", "--filter", GATE_FILTER], 600, GATE_ENV)
+                status = "survived" if rc == 0 else "killed"
+        finally:
+            path.write_text(original)
+        c["afterNewTests"] = status
+        out.append(c)
+        print(f"{c['file'].split('/')[-1]}:{c['line']} {c['op']}: {status}", flush=True)
+    with open(outdir / "verify.jsonl", "w") as f:
+        for c in out: f.write(json.dumps(c) + "\n")
+    run(["swift", "build", "--build-tests"], 900)
+
+def recheck(outdir):
+    """Re-runs every survivor against the FULL test suite (not just the gate).
+
+    A mutant that survives the fast gate but dies in the full suite is a gate
+    gap, not a suite gap. Writes recheck.jsonl."""
+    rs = [json.loads(l) for l in open(outdir / "results.jsonl")]
+    surv = [r for r in rs if r["status"] == "survived"]
+    with open(outdir / "recheck.jsonl", "w") as f:
+        for i, c in enumerate(surv):
+            path = ROOT / c["file"]
+            original = path.read_text()
+            lines = original.splitlines(keepends=True)
+            line = lines[c["line"] - 1]
+            lines[c["line"] - 1] = line[:c["col"]] + c["rep"] + line[c["end"]:]
+            try:
+                path.write_text("".join(lines))
+                rc, _ = run(["swift", "build", "--build-tests"], 900)
+                if rc != 0:
+                    status = "invalid"
+                else:
+                    rc, _ = run(["swift", "test", "--skip-build"], 1200, {"EGWALKER_FUZZ_ITERS": "300"})
+                    status = "survived" if rc == 0 else "killed"
+            finally:
+                path.write_text(original)
+            c["fullSuite"] = status
+            f.write(json.dumps(c) + "\n"); f.flush()
+            print(f"[{i+1}/{len(surv)}] full suite: {status:9s} {c['file'].split('/')[-1]}:{c['line']} {c['op']}", flush=True)
+    run(["swift", "build", "--build-tests"], 900)
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--report":
+    if len(sys.argv) > 1 and sys.argv[1] == "--verify":
+        verify(ROOT / "Benchmarks" / "mutation", set(sys.argv[2:]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--recheck":
+        recheck(ROOT / "Benchmarks" / "mutation")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--report":
         out = ROOT / "Benchmarks" / "mutation"
         report(out / "results.jsonl", out / "REPORT.md")
     else:

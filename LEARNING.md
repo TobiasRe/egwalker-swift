@@ -119,7 +119,30 @@ Zur Traversal-Reihenfolge: Jede topologische Reihenfolge liefert dasselbe Dokume
 
 ## 6. Mutation Testing
 
-{{MUTATION}}
+Mutation Testing beantwortet die Frage: *Würden meine Tests es merken, wenn dieser Code falsch wäre?* Der Runner (`Scripts/mutate.py`) baut nacheinander kleine, plausible Bugs ein, zum Beispiel `<` → `<=`, `+= 1` → `-= 1` oder `&&` → `||`. Nach jedem Einbau baut er neu und lässt ein schnelles, aber scharfes Test-Gate laufen (Konformanz, echte Traces, 60 Fuzz-Seeds, ~12 s).
+
+- **Killed:** Die Tests schlagen fehl. Gut.
+- **Survived:** Die Tests sind trotzdem grün. Entweder haben sie hier einen blinden Fleck, oder der Mutant ist *äquivalent*, ändert also das Verhalten gar nicht. Das muss ein Mensch entscheiden. Genau darin liegt der Wert der Methode.
+
+**Ergebnis:** 110 zufällig gezogene Mutanten aus 869 Kandidaten. Roh: 93 getötet, 17 überlebt, **84,5 %**. Nach der Triage (`Benchmarks/mutation/TRIAGE.md`):
+
+| Kategorie | Anzahl | Was wir getan haben |
+|---|---|---|
+| Echte Testlücke | 6 | 5 neue Tests plus Debug-Asserts, jeweils mit `--verify` bestätigt, dass der Mutant jetzt stirbt |
+| Nur Performance | 4 | bleiben, abgesichert durch die Benchmarks |
+| Nur Metrik | 2 | bleiben |
+| Äquivalent | 5 | bleiben, Begründung dokumentiert |
+
+Danach sind **99/110 getötet (90 %)**, und **jeder verhaltensändernde Mutant der Stichprobe stirbt**.
+
+Was die Überlebenden gelehrt haben:
+1. **Ausgabe-Tests sehen keine Kompaktheit.** Wird die RLE-Verschmelzung kaputt gemacht, kommt derselbe Text heraus, nur mit mehr Speicher und langsamer. Lösung: Tests auf Struktur (`entryCount`, `runCount`) und die Invariante „keine zwei benachbarten verschmelzbaren Spans“.
+2. **Ein Test kann zufällig blind sein.** Unser RLE-Test tippte ab LV 0, und genau dort sind `a - 0` und `a + 0` gleich. Ein Mutant hat das sichtbar gemacht.
+3. **Unsafe Pointer trappen nicht.** `idx > 0` → `idx >= 0` liest Span −1 aus fremdem Speicher, und kein Test merkt es. Jetzt gibt es `assert`-Bounds-Checks in den Raw-Accessoren (nur im Debug-Build, kosten im Release nichts).
+4. **Gate ≠ Suite.** Ein Mutant überlebte nur, weil das schnelle Gate einen relevanten Test nicht enthielt. Deshalb kann man jeden Überlebenden zusätzlich gegen die volle Suite prüfen (`--recheck`).
+5. **Fuzzer brauchen Szenarien, nicht nur Zufall.** Der Zufallsfuzzer hat nie eine Backspace-Serie erzeugt, deren Mitte ein anderer Branch referenziert. Der neue Test baut genau dieses Muster gezielt, mit 300 Seeds.
+
+**Übung 6:** Nimm einen der „nur Performance“-Mutanten und überleg dir einen Test, der ihn tötet, ohne von Timing abzuhängen. Tipp: Zähle Operationen, nicht Millisekunden (siehe `WalkerStats`).
 
 ---
 

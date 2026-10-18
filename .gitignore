@@ -4,5 +4,6 @@ Benchmarks/data/
 Benchmarks/rust-dt-bench/target/
 Benchmarks/rust-dt-bench/build.log
 *.profraw
-.vendor/
+.vendor
 Benchmarks/mutation-run.log
+Scripts/__pycache__/

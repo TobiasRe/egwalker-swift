@@ -203,11 +203,17 @@ final class ItemTree {
 
     // MARK: Basic accessors
 
+    // Raw-pointer reads don't trap on a bad index; they silently read a
+    // neighbour's memory. These asserts make debug builds (the test suite) trap
+    // instead. They compile away in release. (Mutation testing found an
+    // `idx > 0` -> `idx >= 0` bug that read span -1 and went unnoticed.)
     @inline(__always) func span(_ leaf: Int32, _ idx: Int) -> Span {
-        spans[Int(leaf) &* Self.leafCap &+ idx]
+        assert(leaf >= 0 && Int(leaf) < leafCount && idx >= 0 && idx < Self.leafCap, "span index out of range")
+        return spans[Int(leaf) &* Self.leafCap &+ idx]
     }
     @inline(__always) private func spanPtr(_ leaf: Int32, _ idx: Int) -> UnsafeMutablePointer<Span> {
-        spans + (Int(leaf) &* Self.leafCap &+ idx)
+        assert(leaf >= 0 && Int(leaf) < leafCount && idx >= 0 && idx <= Self.leafCap, "span index out of range")
+        return spans + (Int(leaf) &* Self.leafCap &+ idx)
     }
     @inline(__always) func len(_ leaf: Int32) -> Int { Int(leafLen[Int(leaf)]) }
 
