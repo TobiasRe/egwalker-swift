@@ -125,13 +125,36 @@ Zur Traversal-Reihenfolge: Jede topologische Reihenfolge liefert dasselbe Dokume
 
 ## 7. Benchmarks
 
-{{BENCH}}
+Gemessen mit `Scripts/bench.sh` auf derselben 2-Kern-VM (Intel Xeon @ 2,1 GHz, Linux). Swift und Rust laufen abwechselnd, damit Störungen beide gleich treffen. Gemessen wird `checkout` eines bereits geladenen Oplogs, also das, was das Paper „merge time“ nennt. Speicher ist der Peak-Heap-Zuwachs während eines Checkouts, für beide mit demselben `LD_PRELOAD`-malloc-Tracker gemessen (`Benchmarks/memtrack`).
+
+| Trace | Ops | Swift | Rust (diamond-types) | Rust/Swift | Heap Swift | Heap Rust |
+|---|---|---|---|---|---|---|
+| S1 | 779k | 1,98 ms | 4,05 ms | **2,05×** | 0,33 MB | 1,39 MB |
+| S2 | 1,1M | 3,50 ms | 6,04 ms | **1,73×** | 0,41 MB | 0,88 MB |
+| S3 | 2,3M | 5,49 ms | 8,21 ms | **1,50×** | 1,17 MB | 0,86 MB |
+| C1 | 652k | 74,6 ms | 105,1 ms | **1,41×** | **1,14 MB** | 42,7 MB |
+| C2 | 608k | 107,3 ms | 153,6 ms | **1,43×** | **1,63 MB** | 50,4 MB |
+| A1 | 947k | 21,7 ms | 18,8 ms | 0,87× | 3,02 MB | 3,16 MB |
+| A2 | 698k | 53,8 ms | 50,5 ms | 0,94× | 6,99 MB | 5,83 MB |
+
+Alle Swift-Ergebnisse sind byte-identisch mit diamond-types (Spalte „Correct“ in `Benchmarks/results/RESULTS.md`).
+
+**Einordnung, ehrlich:**
+- Das Ziel „Rust in Geschwindigkeit, Ressourcen und Zuverlässigkeit schlagen“ ist **teilweise erreicht**. Bei der Geschwindigkeit gewinnt Swift auf 5 von 7 Traces, bei A1/A2 liegt es 6–13 % zurück. Beim Speicher gewinnt Swift auf 5 von 7 Traces, auf C1/C2 dramatisch (37× weniger Peak), auf S3/A2 nicht.
+- Woher kommt der C-Vorsprung? Unser Tracker wird an *jeder* kritischen Version geleert, und die Placeholder kosten O(1). diamond-types hält bei C1/C2 offenbar einen großen Zustand. Das haben wir nicht im Detail untersucht. Es ist eine Beobachtung, keine Erklärung.
+- Bei „Zuverlässigkeit“ lassen sich zwei Implementierungen schlecht per Zahl vergleichen. Wir können aber belegen, was *unsere* Implementierung absichert: Orakel-Fuzzing, Invarianten nach jedem Schritt, ASan, Mutation Testing. Dazu kommt, dass Swift sicher kompiliert: Bounds-Checks und Overflow-Checks bleiben im Release-Build *an*. Wir verzichten bewusst auf `-Ounchecked`.
+- Die Messung lief auf x86-Linux. Auf Apple Silicon kann das Verhältnis anders aussehen. Das ist die erste Sache, die du auf deinem Mac nachmessen solltest.
 
 ---
 
 ## 8. Wo Rust (noch) vorne liegt, und nächste Schritte
 
-{{NEXT}}
+- **A1/A2 (stark verzweigte Historien):** Der Rest-Rückstand steckt in Retreat/Advance, also in `addToCur` mit `find`, Splits, Propagation und Merges. Ideen: (1) die Parent-Slot-Position pro Knoten speichern statt sie zu suchen, (2) Spans auf 20 Byte verdichten (Int32-LVs statt Int), damit doppelt so viele pro Cache-Line passen, (3) ein echtes Kostenmodell statt der Schwelle von 64 Entries für die DFS-Reihenfolge.
+- **Speicher A2:** `leafOf` und `delTarget` sind dichte Arrays über alle getrackten Events (je 4 Byte). Eine RLE-Variante, wie sie diamond-types nutzt, würde A2 unter Rust bringen.
+- **Inkrementeller Merge mit Fast-Forward:** `TextDocument.merge` trackt derzeit jedes neue Event. Für den häufigsten Fall (Remote-Events ohne Nebenläufigkeit) könnte es direkt vorspulen.
+- **Mutation Testing mit Schemata:** Statt eines Rebuilds pro Mutant alle Mutanten einmal hinter einem Laufzeit-Switch kompilieren (wie swift-mutation-testing). Das wäre etwa 10× schneller.
+- **Persistenz und Netzwerk:** ein kompaktes Binärformat fürs Oplog (diamond-types' `.dt` lesen und schreiben) und ein Sync-Protokoll (Version-Summaries austauschen).
+- **API für Apps:** Cursor-Positionen über Merges hinweg transformieren und eine SwiftUI/TCA-Anbindung.
 
 ---
 
