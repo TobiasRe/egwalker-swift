@@ -66,4 +66,4 @@ for _ in 0..<iters {
 times.sort()
 let median = times[times.count / 2]
 let fmt = { (x: Double) in String(format: "%.3f", x) }
-print("{\"impl\":\"egwalker-swift\",\"trace\":\"\(name)\",\"ops\":\(oplog.count),\"docLen\":\(docLen),\"medianMs\":\(fmt(median)),\"minMs\":\(fmt(times[0])),\"peakHeapBytes\":\(peak),\"retainedBytes\":\(retained),\"correct\":\(correct),\"fastForwarded\":\(stats.fastForwarded),\"tracked\":\(stats.tracked),\"sessions\":\(stats.trackingSessions)}")
+print("{\"impl\":\"egwalker-swift\",\"trace\":\"\(name)\",\"ops\":\(oplog.count),\"docLen\":\(docLen),\"medianMs\":\(fmt(median)),\"minMs\":\(fmt(times[0])),\"peakHeapBytes\":\(peak),\"retainedBytes\":\(retained),\"correct\":\(correct),\"fastForwarded\":\(stats.fastForwarded),\"tracked\":\(stats.tracked),\"sessions\":\(stats.trackingSessions),\"retreated\":\(stats.retreated),\"advanced\":\(stats.advanced)}")

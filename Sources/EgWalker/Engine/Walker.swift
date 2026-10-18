@@ -1,3 +1,5 @@
+import Foundation
+
 /// The optimized Eg-walker.
 ///
 /// The core idea, in three sentences:
@@ -15,23 +17,36 @@ final class Walker {
     let oplog: OpLog
     let doc: GapBuffer
 
-    // Performance note: `@exclusivity(unchecked)` turns off Swift's *dynamic*
-    // exclusivity checks for these fields. The walker is single-threaded and never
-    // passes these properties inout while also reading them, so the checks can't
-    // fire — but they cost ~10% of the runtime in the hot loop. The test suite
-    // (incl. the debug build, where the rest of the checks stay on) guards this.
+    // Performance notes.
+    //
+    // 1. `@exclusivity(unchecked)` turns off Swift's *dynamic* exclusivity checks
+    //    for these fields. The walker is single-threaded and never passes these
+    //    properties inout while also reading them, so the checks can never fire —
+    //    but they cost ~10% of the runtime in the hot loop.
+    // 2. During `checkout()` we read the oplog through raw buffer pointers
+    //    (`entries`, `parentPool`, `runs`). Going through the Swift arrays would
+    //    retain/release their storage on every access; through pointers it's a
+    //    plain load. The pointers are only valid inside `checkout()`'s
+    //    `withUnsafeBufferPointer` scopes, and nothing escapes them.
+    @exclusivity(unchecked) private var entries = UnsafeBufferPointer<CGEntry>(start: nil, count: 0)
+    @exclusivity(unchecked) private var parentPool = UnsafeBufferPointer<LV>(start: nil, count: 0)
+    @exclusivity(unchecked) private var runs = UnsafeBufferPointer<OpRun>(start: nil, count: 0)
+    @exclusivity(unchecked) private var content = UnsafeBufferPointer<Unicode.Scalar>(start: nil, count: 0)
+
     @exclusivity(unchecked) private var tree: ItemTree?
     @exclusivity(unchecked) private var tracking = false
-    /// The version the tracker's `cur` states represent.
-    @exclusivity(unchecked) private var curVersion = ContiguousArray<LV>()
+    /// The version the tracker's `cur` states represent (a small set of LVs).
+    @exclusivity(unchecked) private var curVersion = SmallVersion()
     /// Scratch for `moveTracker`: queue entries encoded as `lv << 2 | flag`.
-    @exclusivity(unchecked) private var diffQueue: UnsafeMutablePointer<Int> = .allocate(capacity: 64)
+    @exclusivity(unchecked) private var diffQueue = UnsafeMutablePointer<Int>.allocate(capacity: 64)
     @exclusivity(unchecked) private var diffQueueCap = 64
     @exclusivity(unchecked) private var diffAdvance = ContiguousArray<LVRange>()
     /// delTarget[lv - trackBase] = LV of the item deleted by delete event `lv`.
     @exclusivity(unchecked) private var delTarget: UnsafeMutablePointer<Int>?
     @exclusivity(unchecked) private var delTargetCapacity = 0
     @exclusivity(unchecked) private var trackBase = 0
+    /// One-element parent list, for slices that start mid-entry.
+    private let oneParent = UnsafeMutablePointer<LV>.allocate(capacity: 1)
 
     /// Statistics, useful for understanding what the walker did.
     @exclusivity(unchecked) private(set) var stats = Stats()
@@ -41,7 +56,22 @@ final class Walker {
         var trackingSessions = 0
         var maxTrackedItems = 0
         var peakTreeBytes = 0
+        var retreated = 0
+        var advanced = 0
     }
+
+    /// Concurrent regions with at least this many entries are replayed depth-first
+    /// (see `processRegion`); smaller ones in LV order.
+    ///
+    /// This threshold is empirical (sweep on the paper traces, see LEARNING.md):
+    /// the long-lived branches of the A traces gain 2-2.5x from depth-first order,
+    /// while the C traces' short, rapidly synchronising regions get ~10-30%
+    /// slower with it even though they do slightly *less* tracker movement.
+    /// Overridable via EGWALKER_DFS_MIN for experiments.
+    nonisolated(unsafe) static var dfsMinEntries: Int = {
+        if let s = getenv("EGWALKER_DFS_MIN"), let v = Int(String(cString: s)) { return v }
+        return 64
+    }()
 
     /// When true, the tree validates every invariant after each step (tests only).
     var debugChecks = false
@@ -51,7 +81,37 @@ final class Walker {
         self.doc = doc
     }
 
-    deinit { delTarget?.deallocate(); diffQueue.deallocate() }
+    deinit {
+        delTarget?.deallocate()
+        diffQueue.deallocate()
+        oneParent.deallocate()
+    }
+
+    // MARK: - Raw oplog access
+
+    @inline(__always) private func entryIndex(_ v: LV) -> Int {
+        var lo = 0, hi = entries.count
+        while lo < hi {
+            let mid = (lo + hi) &>> 1
+            let e = entries[mid]
+            if v < e.version { hi = mid } else if v >= e.vEnd { lo = mid &+ 1 } else { return mid }
+        }
+        preconditionFailure("Invalid or unknown local version \(v)")
+    }
+
+    @inline(__always) private func parents(_ e: CGEntry) -> UnsafeBufferPointer<LV> {
+        UnsafeBufferPointer(rebasing: parentPool[e.parentsStart..<(e.parentsStart + Int(e.parentsCount))])
+    }
+
+    @inline(__always) private func runIndex(_ lv: LV) -> Int {
+        var lo = 0, hi = runs.count
+        while lo < hi {
+            let mid = (lo + hi) &>> 1
+            let r = runs[mid]
+            if lv < r.lvStart { hi = mid } else if lv >= r.lvEnd { lo = mid &+ 1 } else { return mid }
+        }
+        preconditionFailure("Unknown LV \(lv)")
+    }
 
     // MARK: - Planning
 
@@ -83,16 +143,14 @@ final class Walker {
         for i in 0..<n {
             let e = entries[i]
             let ps = cg.parents(e)
-            // Remove parents from the frontier, add this event.
             var j = 0
             while j < frontier.count {
                 if ps.contains(frontier[j]) { frontier.swapAt(j, frontier.count - 1); frontier.removeLast() }
                 else { j += 1 }
             }
             frontier.append(e.vEnd - 1)
-            let single = frontier.count == 1
             var ce = e.version
-            if single {
+            if frontier.count == 1 {
                 let bound = laterMin[i + 1]
                 ce = bound == Int.max ? e.vEnd : Swift.min(e.vEnd, Swift.max(e.version, bound + 1))
             }
@@ -107,39 +165,154 @@ final class Walker {
     // MARK: - Checkout
 
     func checkout() {
-        let cg = oplog.cg
-        let (critEnd, maxRegion) = Self.plan(cg)
-        var ffVersion = ContiguousArray<LV>()
-        var single = ContiguousArray<LV>([0])
+        let (critEnd, maxRegion) = Self.plan(oplog.cg)
+        oplog.cg.entries.withUnsafeBufferPointer { e in
+        oplog.cg.parentPool.withUnsafeBufferPointer { p in
+        oplog.runs.withUnsafeBufferPointer { r in
+        oplog.content.withUnsafeBufferPointer { c in
+            entries = e; parentPool = p; runs = r; content = c
+            defer {
+                entries = .init(start: nil, count: 0); parentPool = .init(start: nil, count: 0)
+                runs = .init(start: nil, count: 0); content = .init(start: nil, count: 0)
+            }
+            walk(critEnd: critEnd, maxRegion: maxRegion)
+        }}}}
+        if tracking { stopTracking() }
+    }
 
-        oplog.content.withUnsafeBufferPointer { content in
-            for (i, e) in cg.entries.enumerated() {
-                let ce = critEnd[i]
-                if ce > e.version {
-                    // Critical prefix: the document is exactly at this event's parent
-                    // version, so positions are valid as-is.
-                    if tracking { stopTracking() }
-                    fastForward(e.version, ce, content)
-                    ffVersion.removeAll(keepingCapacity: true)
-                    ffVersion.append(ce - 1)
-                }
-                if ce < e.vEnd {
-                    if !tracking { startTracking(at: ce, version: ffVersion[...], capacity: maxRegion) }
-                    if ce > e.version {
-                        single[0] = ce - 1
-                        trackedApply(ce, e.vEnd, parents: single[...], content, toDoc: true)
-                    } else {
-                        trackedApply(ce, e.vEnd, parents: cg.parents(e), content, toDoc: true)
+    private func walk(critEnd: [LV], maxRegion: Int) {
+        let n = entries.count
+        var ffVersion: LV = -1  // the doc's version while fast-forwarding (-1: root)
+        var i = 0
+        while i < n {
+            let e = entries[i]
+            let ce = critEnd[i]
+            if ce > e.version {
+                // Critical prefix: the document is exactly at this event's parent
+                // version, so its positions are valid as-is.
+                if tracking { stopTracking() }
+                fastForward(e.version, ce)
+                ffVersion = ce - 1
+            }
+            if ce < e.vEnd {
+                // A concurrent region: this entry's tail plus every following
+                // entry up to the next one that starts with a critical event.
+                var j = i + 1
+                while j < n && critEnd[j] == entries[j].version { j += 1 }
+                if !tracking { startTracking(at: ce, version: ffVersion, capacity: maxRegion) }
+                if j - i >= Self.dfsMinEntries {
+                    processRegion(firstEntry: i, firstStart: ce, endEntry: j)
+                } else {
+                    for k in i..<j {
+                        let ek = entries[k]
+                        if k == i && ce > ek.version {
+                            oneParent.pointee = ce - 1
+                            trackedApply(ce, ek.vEnd, parents: UnsafeBufferPointer(start: oneParent, count: 1))
+                        } else {
+                            trackedApply(ek.version, ek.vEnd, parents: parents(ek))
+                        }
                     }
                 }
+                i = j
+            } else {
+                i += 1
             }
         }
-        if tracking { stopTracking() }
+    }
+
+    // MARK: - Traversal order
+
+    /// Applies the entries `[firstEntry, endEntry)` (the first one starting at
+    /// `firstStart`) in a topological order that keeps tracker movement small.
+    ///
+    /// Any topological order yields the same document, but the cost differs a
+    /// lot. Moving the tracker between versions costs one retreat/advance per
+    /// event in their symmetric difference. Picture a fork with a small branch S
+    /// and a large branch L that merge later:
+    ///   S first: retreat S when switching to L, advance S at the merge: 2·|S|
+    ///   L first: retreat L, advance L at the merge:                   2·|L|
+    /// So: depth-first, smallest subtree first (the same idea as diamond-types'
+    /// planner). On the A2 trace this cuts retreat+advance work from 6.0M to 2.4M.
+    private func processRegion(firstEntry: Int, firstStart: LV, endEntry: Int) {
+        let m = endEntry - firstEntry
+        let firstIsPartial = firstStart > entries[firstEntry].version
+        @inline(__always) func start(_ k: Int) -> LV { k == 0 ? firstStart : entries[firstEntry + k].version }
+        @inline(__always) func end(_ k: Int) -> LV { entries[firstEntry + k].vEnd }
+        @inline(__always) func parentsOf(_ k: Int) -> UnsafeBufferPointer<LV> {
+            if k == 0 && firstIsPartial {
+                oneParent.pointee = firstStart - 1
+                return UnsafeBufferPointer(start: oneParent, count: 1)
+            }
+            return parents(entries[firstEntry + k])
+        }
+        /// Region-local index of the entry containing `v` (v >= firstStart).
+        @inline(__always) func entryOf(_ v: LV) -> Int {
+            var lo = 0, hi = m
+            while lo < hi {
+                let mid = (lo + hi) >> 1
+                if v >= end(mid) { lo = mid + 1 } else { hi = mid }
+            }
+            return lo
+        }
+
+        // Child lists (CSR layout) and in-degrees, at entry granularity.
+        var indeg = [Int32](repeating: 0, count: m)
+        var childStart = [Int](repeating: 0, count: m + 1)
+        for k in 0..<m {
+            for p in parentsOf(k) where p >= firstStart {
+                childStart[entryOf(p) + 1] += 1
+                indeg[k] += 1
+            }
+        }
+        for k in 0..<m { childStart[k + 1] += childStart[k] }
+        var children = [Int32](repeating: 0, count: childStart[m])
+        var fill = childStart
+        for k in 0..<m {
+            for p in parentsOf(k) where p >= firstStart {
+                let pe = entryOf(p)
+                children[fill[pe]] = Int32(k)
+                fill[pe] += 1
+            }
+        }
+
+        // Subtree cost: events in this entry plus (over-)counted descendants.
+        // Children always come after parents in LV order, so one reverse pass works.
+        var subtree = [Int](repeating: 0, count: m)
+        var k = m - 1
+        while k >= 0 {
+            var c = end(k) - start(k)
+            for ci in childStart[k]..<childStart[k + 1] {
+                c = Swift.min(c &+ subtree[Int(children[ci])], Int.max / 4)
+            }
+            subtree[k] = c
+            k -= 1
+        }
+
+        // Depth-first; when several entries become ready, the smallest subtree
+        // goes on top of the stack (visited first).
+        var stack: [Int32] = []
+        var ready: [Int32] = []
+        for k in 0..<m where indeg[k] == 0 { ready.append(Int32(k)) }
+        ready.sort { subtree[Int($0)] > subtree[Int($1)] }
+        stack.append(contentsOf: ready)
+
+        while let top = stack.popLast() {
+            let k = Int(top)
+            trackedApply(start(k), end(k), parents: parentsOf(k))
+            ready.removeAll(keepingCapacity: true)
+            for ci in childStart[k]..<childStart[k + 1] {
+                let c = Int(children[ci])
+                indeg[c] -= 1
+                if indeg[c] == 0 { ready.append(Int32(c)) }
+            }
+            if ready.count > 1 { ready.sort { subtree[Int($0)] > subtree[Int($1)] } }
+            stack.append(contentsOf: ready)
+        }
     }
 
     // MARK: - Fast-forward
 
-    private func fastForward(_ start: LV, _ end: LV, _ content: UnsafeBufferPointer<Unicode.Scalar>) {
+    private func fastForward(_ start: LV, _ end: LV) {
         stats.fastForwarded += end - start
         forEachOpPiece(start, end) { run, a, b in
             switch run.kind {
@@ -157,10 +330,10 @@ final class Walker {
     /// Calls `body(run, a, b)` for each op run overlapping [start, end), clipped.
     @inline(__always)
     private func forEachOpPiece(_ start: LV, _ end: LV, _ body: (OpRun, LV, LV) -> Void) {
-        var ri = oplog.runIndex(start)
+        var ri = runIndex(start)
         var lv = start
         while lv < end {
-            let run = oplog.runs[ri]
+            let run = runs[ri]
             let b = Swift.min(end, run.lvEnd)
             body(run, lv, b)
             lv = b
@@ -170,7 +343,7 @@ final class Walker {
 
     // MARK: - Tracking
 
-    private func startTracking(at base: LV, version: ArraySlice<LV>, capacity: Int) {
+    private func startTracking(at base: LV, version: LV, capacity: Int) {
         tracking = true
         stats.trackingSessions += 1
         trackBase = base
@@ -190,8 +363,8 @@ final class Walker {
             t.insertSpan(Span(lv: placeholderBase, originLeft: -1, rightParent: -1, len: Int32(docLen),
                               cur: ItemState.inserted, endDeleted: false), leaf: t.firstLeaf, at: 0)
         }
-        curVersion.removeAll(keepingCapacity: true)
-        curVersion.append(contentsOf: version)
+        curVersion.removeAll()
+        if version >= 0 { curVersion.append(version) }
     }
 
     private func stopTracking() {
@@ -204,24 +377,24 @@ final class Walker {
 
     /// Applies events [start, end) (one causal-graph run with the given parents)
     /// through the CRDT.
-    func trackedApply(_ start: LV, _ end: LV, parents: ArraySlice<LV>, _ content: UnsafeBufferPointer<Unicode.Scalar>, toDoc: Bool) {
+    private func trackedApply(_ start: LV, _ end: LV, parents: UnsafeBufferPointer<LV>) {
         stats.tracked += end - start
-        if !curVersion.elementsEqual(parents) { moveTracker(to: parents) }
+        if !curVersion.equals(parents) { moveTracker(to: parents) }
         forEachOpPiece(start, end) { run, a, b in
             switch run.kind {
             case .insert:
                 let from = run.contentStart + (a - run.lvStart)
                 trackedInsert(lv: a, count: b - a, pos: run.pos(at: a - run.lvStart),
-                              UnsafeBufferPointer(rebasing: content[from..<(from + b - a)]), toDoc: toDoc)
+                              UnsafeBufferPointer(rebasing: content[from..<(from + b - a)]))
             case .delete:
                 if run.fwd {
-                    trackedDelete(lv: a, count: b - a, pos: run.pos, reversed: false, toDoc: toDoc)
+                    trackedDelete(lv: a, count: b - a, pos: run.pos, reversed: false)
                 } else {
-                    trackedDelete(lv: a, count: b - a, pos: run.pos(at: b - 1 - run.lvStart), reversed: true, toDoc: toDoc)
+                    trackedDelete(lv: a, count: b - a, pos: run.pos(at: b - 1 - run.lvStart), reversed: true)
                 }
             }
         }
-        curVersion.removeAll(keepingCapacity: true)
+        curVersion.removeAll()
         curVersion.append(end - 1)
         if debugChecks { tree!.checkInvariants() }
     }
@@ -233,8 +406,7 @@ final class Walker {
     /// tiny sorted array (it rarely holds more than a handful of versions), and
     /// retreats are applied the moment they're discovered (they come out in
     /// descending order, which is exactly the order retreating needs).
-    private func moveTracker(to target: ArraySlice<LV>) {
-        let cg = oplog.cg
+    private func moveTracker(to target: UnsafeBufferPointer<LV>) {
         diffAdvance.removeAll(keepingCapacity: true)
         // Ascending sorted queue of (lv << 2 | flag). Max is at the end.
         var q = diffQueue
@@ -282,7 +454,7 @@ final class Walker {
             }
         }
 
-        for v in curVersion { enq(v, fA) }
+        for i in 0..<curVersion.count { enq(curVersion[i], fA) }
         for v in target { enq(v, fB) }
 
         while qCount > numShared {
@@ -290,7 +462,7 @@ final class Walker {
             var v = q[qCount] >> 2
             var flag = q[qCount] & 3
             if flag == fShared { numShared -= 1 }
-            let e = cg.findEntry(v)
+            let e = entries[entryIndex(v)]
             while qCount > 0 && (q[qCount - 1] >> 2) >= e.version {
                 qCount -= 1
                 let v2 = q[qCount] >> 2
@@ -303,7 +475,7 @@ final class Walker {
                 }
             }
             markRun(e.version, v, flag)
-            for p in cg.parents(e) { enq(p, flag) }
+            for p in parents(e) { enq(p, flag) }
         }
         if !pendingRetreat.isEmpty { applyDelta(pendingRetreat, -1) }
         var k = diffAdvance.count - 1
@@ -313,6 +485,7 @@ final class Walker {
     /// Retreats (-1) or advances (+1) every event in `r`.
     private func applyDelta(_ r: LVRange, _ delta: Int32) {
         let tree = self.tree!
+        if delta < 0 { stats.retreated += r.count } else { stats.advanced += r.count }
         precondition(r.start >= trackBase, "retreat/advance below the tracking base")
         forEachOpPiece(r.start, r.end) { run, a, b in
             switch run.kind {
@@ -340,7 +513,7 @@ final class Walker {
         }
     }
 
-    private func trackedInsert(lv: LV, count n: Int, pos: Int, _ content: UnsafeBufferPointer<Unicode.Scalar>, toDoc: Bool) {
+    private func trackedInsert(lv: LV, count n: Int, pos: Int, _ text: UnsafeBufferPointer<Unicode.Scalar>) {
         let tree = self.tree!
         var cursor = tree.cursorAfterCurPos(pos)
 
@@ -350,7 +523,8 @@ final class Walker {
             originLeft = tree.span(cursor.leaf, cursor.idx).lv + cursor.off - 1
         }
 
-        // Find the first item at/after the cursor that isn't NYI.
+        // Find the first item at/after the cursor that isn't NYI. Fugue's rule:
+        // it's our right parent only if it shares our origin-left.
         var rightParent = -1
         var firstLeaf = cursor.leaf, firstIdx = cursor.idx
         var atEnd = false
@@ -365,14 +539,15 @@ final class Walker {
             }
             firstLeaf = leaf; firstIdx = idx
             if !atEnd {
-                nextIsNYI = tree.span(leaf, idx).cur == ItemState.notYetInserted
                 var s = tree.span(leaf, idx)
+                nextIsNYI = s.cur == ItemState.notYetInserted
+                var found = true
                 while s.cur == ItemState.notYetInserted {
                     off = 0
-                    if !tree.nextSpan(&leaf, &idx) { s = Span(lv: -1, originLeft: 0, rightParent: 0, len: 0, cur: -1, endDeleted: true); break }
+                    if !tree.nextSpan(&leaf, &idx) { found = false; break }
                     s = tree.span(leaf, idx)
                 }
-                if s.len > 0 && s.cur != ItemState.notYetInserted {
+                if found {
                     rightParent = s.originLeft(at: off) == originLeft ? s.lv + off : -1
                 }
             }
@@ -402,14 +577,17 @@ final class Walker {
         } else {
             tree.insertSpan(newSpan, leaf: leaf, at: idx)
         }
-        if toDoc { doc.insert(content, at: cursor.endPos) }
+        doc.insert(text, at: cursor.endPos)
     }
 
     /// YjsMod / Fugue integration, at span granularity. See ReferenceWalker.integrate.
+    ///
+    /// Items after the first in a span always have origin-left = the previous
+    /// item, which sits right of our origin-left, so they never stop the scan and
+    /// never change `scanning`: the whole span can be stepped over at once.
     private func integrate(lv: LV, originLeft: Int, rightParent: Int, cursor: inout TreeCursor,
                            firstLeaf: Int32, firstIdx: Int) {
         let tree = self.tree!
-        let cg = oplog.cg
         let leftRank = tree.rank(leaf: cursor.leaf, idx: cursor.idx, off: cursor.off) - 1
         let rightRank = rightParent == -1 ? Int(tree.total.items) : tree.rank(ofLV: rightParent)
         var scanning = false
@@ -423,7 +601,7 @@ final class Walker {
             if oleftRank < leftRank { break }
             if oleftRank == leftRank {
                 let orightRank = other.rightParent == -1 ? Int(tree.total.items) : tree.rank(ofLV: other.rightParent)
-                if orightRank == rightRank && cg.compareLV(lv, other.lv) < 0 { break }
+                if orightRank == rightRank && oplog.cg.compareLV(lv, other.lv) < 0 { break }
                 scanning = orightRank < rightRank
             }
             if !other.endDeleted { scanEndPos += Int(other.len) }
@@ -434,17 +612,17 @@ final class Walker {
         }
     }
 
-    private func trackedDelete(lv: LV, count n: Int, pos: Int, reversed: Bool, toDoc: Bool) {
+    private func trackedDelete(lv: LV, count n: Int, pos: Int, reversed: Bool) {
         let tree = self.tree!
         let dt = delTarget!
         let c = tree.cursorAtVisible(pos)
         var leaf = c.leaf, idx = c.idx, off = c.off
-        var endPos = c.endPos
+        var docPos = c.endPos
         var k = 0
         while k < n {
             let s = tree.span(leaf, idx)
             if s.cur != ItemState.inserted {
-                if !s.endDeleted { endPos += Int(s.len) - off }
+                if !s.endDeleted { docPos += Int(s.len) - off }
                 off = 0
                 let ok = tree.nextSpan(&leaf, &idx)
                 precondition(ok, "delete ran off the end of the document")
@@ -458,7 +636,7 @@ final class Walker {
                 let delLV = reversed ? lv + n - 1 - (k + j) : lv + k + j
                 dt[delLV - trackBase] = targetStart + j
             }
-            if !s.endDeleted && toDoc { doc.delete(at: endPos, count: m) }
+            if !s.endDeleted { doc.delete(at: docPos, count: m) }
             tree.modifySpan(leaf: leaf, idx: idx) { $0.cur = 1; $0.endDeleted = true }
             // Keep the tree compact: deleted runs merge with deleted neighbours.
             tree.tryMergeRight(leaf: leaf, idx: idx)
@@ -473,54 +651,65 @@ final class Walker {
     }
 }
 
+/// A tiny set of LVs (a version frontier). Frontiers almost always hold one or two
+/// entries, so this avoids allocating for them.
+struct SmallVersion {
+    private var a: LV = 0, b: LV = 0
+    private var overflow: [LV] = []
+    private(set) var count = 0
+
+    @inline(__always) mutating func removeAll() { count = 0; if !overflow.isEmpty { overflow.removeAll() } }
+    @inline(__always) mutating func append(_ v: LV) {
+        switch count {
+        case 0: a = v
+        case 1: b = v
+        default: overflow.append(v)
+        }
+        count += 1
+    }
+    @inline(__always) subscript(i: Int) -> LV { i == 0 ? a : (i == 1 ? b : overflow[i - 2]) }
+    @inline(__always) func equals(_ p: UnsafeBufferPointer<LV>) -> Bool {
+        if p.count != count { return false }
+        for i in 0..<count where self[i] != p[i] { return false }
+        return true
+    }
+}
+
 // MARK: - Public API
 
 extension OpLog {
     /// Replays the whole oplog into a document (the optimized walker).
     public func checkout() -> Branch {
-        let doc = GapBuffer(capacity: Swift.max(64, count / 4))
+        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
         let walker = Walker(oplog: self, doc: doc)
         walker.checkout()
         return Branch(scalars: doc.scalars, version: cg.heads)
     }
 
+    /// Replays the oplog into a `TextDocument` without materialising a String.
+    public func checkoutDocument() -> TextDocument {
+        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
+        let walker = Walker(oplog: self, doc: doc)
+        walker.checkout()
+        return TextDocument(buffer: doc, version: cg.heads)
+    }
+
     /// Replays the oplog and returns walker statistics alongside the text (for
     /// benchmarks and tests).
     public func checkoutWithStats() -> (text: [Unicode.Scalar], stats: WalkerStats) {
-        let doc = GapBuffer(capacity: Swift.max(64, count / 4))
+        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
         let walker = Walker(oplog: self, doc: doc)
         walker.checkout()
         let s = walker.stats
         return (doc.scalars, WalkerStats(fastForwarded: s.fastForwarded, tracked: s.tracked,
                                          trackingSessions: s.trackingSessions, maxTrackedItems: s.maxTrackedItems,
-                                         peakTreeBytes: s.peakTreeBytes, docBytes: doc.allocatedBytes))
+                                         peakTreeBytes: s.peakTreeBytes, docBytes: doc.allocatedBytes,
+                                         retreated: s.retreated, advanced: s.advanced))
     }
 
-    /// Checkout that only reports the document length (no text materialisation).
-    public func checkoutLength() -> Int {
-        let doc = GapBuffer(capacity: Swift.max(64, count / 4))
-        let walker = Walker(oplog: self, doc: doc)
-        walker.checkout()
-        return doc.count
-    }
-}
-
-public struct WalkerStats: Sendable, CustomStringConvertible {
-    public var fastForwarded: Int
-    public var tracked: Int
-    public var trackingSessions: Int
-    public var maxTrackedItems: Int
-    public var peakTreeBytes: Int
-    public var docBytes: Int
-    public var description: String {
-        "ff=\(fastForwarded) tracked=\(tracked) sessions=\(trackingSessions) maxItems=\(maxTrackedItems) treeBytes=\(peakTreeBytes) docBytes=\(docBytes)"
-    }
-}
-
-extension OpLog {
     /// Checkout with full tree validation after every step. Slow; tests only.
     func checkoutValidated() -> (text: String, stats: Walker.Stats) {
-        let doc = GapBuffer()
+        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
         let walker = Walker(oplog: self, doc: doc)
         walker.debugChecks = true
         walker.checkout()
@@ -539,12 +728,16 @@ public final class TextDocument: @unchecked Sendable {
     public var text: String { Branch(scalars: buffer.scalars).text }
 }
 
-extension OpLog {
-    /// Replays the oplog into a `TextDocument` without materialising a String.
-    public func checkoutDocument() -> TextDocument {
-        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
-        let walker = Walker(oplog: self, doc: doc)
-        walker.checkout()
-        return TextDocument(buffer: doc, version: cg.heads)
+public struct WalkerStats: Sendable, CustomStringConvertible {
+    public var fastForwarded: Int
+    public var tracked: Int
+    public var trackingSessions: Int
+    public var maxTrackedItems: Int
+    public var peakTreeBytes: Int
+    public var docBytes: Int
+    public var retreated: Int
+    public var advanced: Int
+    public var description: String {
+        "ff=\(fastForwarded) tracked=\(tracked) sessions=\(trackingSessions) maxItems=\(maxTrackedItems) treeBytes=\(peakTreeBytes) docBytes=\(docBytes) retreated=\(retreated) advanced=\(advanced)"
     }
 }

@@ -362,6 +362,13 @@ final class ItemTree {
     /// Returns the location of the right half.
     @discardableResult
     func splitSpan(leaf: Int32, idx: Int, off: Int) -> (leaf: Int32, idx: Int) {
+        var leaf = leaf, idx = idx
+        // Make room first, while every aggregate is still exact.
+        if len(leaf) == Self.leafCap {
+            let half = Self.leafCap / 2
+            let newLeaf = splitLeaf(leaf, at: half)
+            if idx >= half { leaf = newLeaf; idx -= half }
+        }
         let p = spanPtr(leaf, idx)
         let s = p.pointee
         precondition(off > 0 && off < Int(s.len), "split offset out of range")
@@ -371,8 +378,14 @@ final class ItemTree {
         right.originLeft = s.lv + off - 1
         right.rightParent = -1
         p.pointee.len = Int32(off)
-        propagate(leaf, Agg() - Agg(right))
-        return insertSpan(right, leaf: leaf, at: idx + 1)
+        // Splitting a span doesn't change any aggregate, so nothing to propagate.
+        let n = len(leaf)
+        let base = spanPtr(leaf, 0)
+        memmoveElements(base + idx + 2, base + idx + 1, n - idx - 1)
+        (base + idx + 1).pointee = right
+        leafLen[Int(leaf)] += 1
+        setLeafOf(right, leaf)
+        return (leaf, idx + 1)
     }
 
     /// Replaces span at (leaf, idx) via `f`, keeping aggregates consistent.
