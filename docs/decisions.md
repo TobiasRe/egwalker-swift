@@ -111,3 +111,16 @@ validating ingestion API is on the [roadmap](roadmap.md).
 
 **Consequences.** Trivial to adopt, nothing to keep in version sync. This matters for binary
 distribution, for example in XCFrameworks.
+
+## D12. WebAssembly as a supported target
+
+**Context.** The browser demo runs the library compiled to wasm32, where `Int` is 32 bits.
+The placeholder base `1 << 60` shifted to 0 there, and Foundation (only used by the JSON
+trace loaders) made the module 54 MB.
+
+**Decision.** Placeholder base `1 << 30` on 32-bit platforms; the core imports only libc,
+and the Foundation-based loaders are compiled out on WASI.
+
+**Consequences.** On 32-bit platforms a document is limited to about a billion events.
+The wasm32 build passes the conformance suite and differential fuzzing inside the Wasm
+runtime (`Demo/check.mjs`). 64-bit behaviour is unchanged.

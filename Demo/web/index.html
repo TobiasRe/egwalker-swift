@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eg-walker Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Three replicas running egwalker-swift, compiled to WebAssembly, in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap">
+<style>
+/* Layout: one reading column for the intro, then a full-width workbench:
+   three replica editors side by side (stacked on phones), and an inspector below. */
+:root {
+  --paper: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #171a20;
+  --ink-2: #4b5261;
+  --ink-3: #7a8191;
+  --rule: #dce0e7;
+  --accent: #2c4bd4;
+  --alice: #0d7a6a;
+  --bob: #b0570a;
+  --carol: #7445c0;
+  --ok: #1d7a3e;
+  --warn: #a25b00;
+  --font-display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101217; --surface: #171a21; --ink: #e8eaef; --ink-2: #a3aaba; --ink-3: #737b8c;
+    --rule: #2a2f3a; --accent: #91a4ff; --alice: #4cc3ad; --bob: #f0a14d; --carol: #b99af2;
+    --ok: #5cc982; --warn: #f0b45a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101217; --surface: #171a21; --ink: #e8eaef; --ink-2: #a3aaba; --ink-3: #737b8c;
+  --rule: #2a2f3a; --accent: #91a4ff; --alice: #4cc3ad; --bob: #f0a14d; --carol: #b99af2;
+  --ok: #5cc982; --warn: #f0b45a; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 48px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(1.9rem, 4vw, 2.6rem); line-height: 1.15; }
+h2 { font-size: 1.35rem; line-height: 1.25; }
+p { margin: 0; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.intro { display: grid; gap: 12px; max-width: 68ch; }
+.intro .lede { color: var(--ink-2); font-size: 1.05rem; }
+.status { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); margin-right: 6px; vertical-align: 1px; }
+.status.ready .dot { background: var(--ok); }
+.status.error { color: var(--warn); }
+
+/* Scenarios */
+.scenarios { display: grid; gap: 10px; }
+.label { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  border: 1px solid var(--rule); background: var(--surface); border-radius: 999px;
+  padding: 7px 14px; font-size: 13.5px; cursor: pointer;
+}
+.chip:hover { border-color: var(--ink-3); }
+.chip.quiet { background: transparent; color: var(--ink-2); }
+.note {
+  border-left: 2px solid var(--accent); padding: 4px 0 4px 14px; color: var(--ink-2);
+  max-width: 78ch; min-height: 1.5em;
+}
+.note strong { color: var(--ink); font-weight: 600; }
+
+/* Replicas */
+.replicas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 900px) { .replicas { grid-template-columns: minmax(0, 1fr); } }
+.replica {
+  --who: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+  display: grid; grid-template-rows: auto 1fr auto; min-width: 0; overflow: hidden;
+}
+.replica[data-who="0"] { --who: var(--alice); }
+.replica[data-who="1"] { --who: var(--bob); }
+.replica[data-who="2"] { --who: var(--carol); }
+.replica.offline { border-style: dashed; }
+.replica header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+.who { display: flex; align-items: center; gap: 8px; font-weight: 600; flex: 1; min-width: 0; }
+.who::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--who); flex: none; }
+.who .mono { font-weight: 400; color: var(--ink-3); font-size: 12px; }
+.toggle {
+  display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--rule); border-radius: 999px;
+  background: transparent; padding: 4px 11px 4px 9px; font-size: 12.5px; cursor: pointer;
+}
+.toggle::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.toggle[aria-pressed="false"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.replica textarea {
+  width: 100%; min-height: 9.5rem; resize: vertical; border: 0; outline: none; padding: 12px;
+  background: transparent; color: var(--ink); font: 14px/1.6 var(--font-mono);
+}
+.replica textarea:focus-visible { box-shadow: inset 0 0 0 2px var(--who); }
+.replica footer {
+  display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-top: 1px solid var(--rule); font-size: 12.5px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.replica footer .waiting { color: var(--warn); }
+
+/* Inspector */
+.inspector { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; display: grid; gap: 18px; }
+.inspector-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; }
+.segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.segmented button { border: 0; background: transparent; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.segmented button + button { border-left: 1px solid var(--rule); }
+.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.inspector-body { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 24px; }
+@media (max-width: 900px) { .inspector-body { grid-template-columns: minmax(0, 1fr); } }
+.summary { color: var(--ink-2); }
+.summary strong { color: var(--ink); font-weight: 600; }
+.replay { display: grid; gap: 8px; }
+.bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--rule); }
+.bar .ff { background: var(--accent); }
+.bar .tr { background: var(--warn); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+dl.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 13.5px; }
+dl.facts dt { color: var(--ink-3); }
+dl.facts dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.graph-wrap { border: 1px solid var(--rule); border-radius: 8px; max-height: 460px; overflow: auto; background: var(--paper); }
+.graph-wrap svg { display: block; }
+.graph-caption { font-size: 12.5px; color: var(--ink-3); }
+.explain { display: grid; gap: 10px; max-width: 72ch; color: var(--ink-2); }
+.explain h2 { color: var(--ink); }
+.explain ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+footer.page { font-size: 13px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+/* A short tint when a replica's text changes because of a merge. */
+@keyframes merged { from { background-color: color-mix(in srgb, var(--who) 14%, transparent); } to { background-color: transparent; } }
+@media (prefers-reduced-motion: no-preference) {
+  .replica textarea.flash { animation: merged 0.7s ease-out; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="intro">
+    <h1>Eg-walker playground</h1>
+    <p class="lede">Three replicas of one document, each running <a href="https://github.com/TobiasRe/egwalker-swift">egwalker-swift</a> compiled to WebAssembly. Type in any of them. Take one offline, keep editing, then bring it back and watch the edits merge.</p>
+    <p class="status" id="status" role="status"><span><span class="dot"></span>Loading the Swift engine…</span></p>
+  </header>
+
+  <section class="scenarios" aria-labelledby="scenario-label">
+    <span class="label" id="scenario-label">Try a scenario</span>
+    <div class="chips">
+      <button class="chip" data-scenario="same">Same spot</button>
+      <button class="chip" data-scenario="lists">Two lists, no interleaving</button>
+      <button class="chip" data-scenario="rewrite">Offline rewrite</button>
+      <button class="chip" data-scenario="big">15,000-event merge</button>
+      <button class="chip quiet" data-scenario="reset">Start over</button>
+    </div>
+    <p class="note" id="note" aria-live="polite">Online replicas sync on every keystroke. Offline replicas keep their edits until they reconnect.</p>
+  </section>
+
+  <section class="replicas" id="replicas" aria-label="Replicas"></section>
+
+  <section class="inspector" aria-labelledby="inspector-title">
+    <div class="inspector-head">
+      <h2 id="inspector-title">Under the hood</h2>
+      <div class="segmented" id="pick" role="group" aria-label="Replica to inspect"></div>
+    </div>
+    <div class="inspector-body">
+      <div class="replay">
+        <p class="summary" id="summary">–</p>
+        <div class="bar" aria-hidden="true"><span class="ff" id="bar-ff"></span><span class="tr" id="bar-tr"></span></div>
+        <div class="legend">
+          <span><i style="background: var(--accent)"></i>applied directly (no CRDT state)</span>
+          <span><i style="background: var(--warn)"></i>needed temporary CRDT state</span>
+        </div>
+        <dl class="facts" id="facts"></dl>
+      </div>
+      <div class="replay">
+        <span class="label">Event graph, newest at the bottom</span>
+        <div class="graph-wrap" id="graph-wrap"><svg id="graph" role="img" aria-label="Event graph"></svg></div>
+        <p class="graph-caption">Each row is a run of consecutive events by one author. Lines point from a run to the events it was based on. Two lines into one row mean that author had seen both branches: a merge.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="explain">
+    <h2>What you're looking at</h2>
+    <ul>
+      <li>Each replica is a real <code>OpLog</code> from egwalker-swift. It stores every edit as a plain position (“insert at 5”) plus which earlier edits its author had seen.</li>
+      <li>Syncing is <code>merge(from:)</code>: one replica learns the events it hasn't seen yet. Nothing is sent but events.</li>
+      <li>The text in each editor is produced by <code>checkout()</code>, which replays the history. Where edits were concurrent, it builds CRDT state for just that stretch and drops it again afterwards. The inspector shows how much of the history needed that.</li>
+      <li>Positions count Unicode scalars, so emoji and accents work as you'd expect. Agent names break ties when two people insert at the same spot.</li>
+    </ul>
+  </section>
+
+  <footer class="page">
+    <span>Source: <a href="https://github.com/TobiasRe/egwalker-swift">TobiasRe/egwalker-swift</a> (MIT)</span>
+    <span>Algorithm: Gentle &amp; Kleppmann, <a href="https://arxiv.org/abs/2409.14252">Eg-walker</a>, EuroSys 2025</span>
+  </footer>
+</div>
+
+<script type="module">
+import { loadEngine, diffScalars } from './engine.js';
+
+const PEOPLE = [
+  { name: 'Alice', agent: 'alice' },
+  { name: 'Bob', agent: 'bob' },
+  { name: 'Carol', agent: 'carol' },
+];
+const statusEl = document.getElementById('status');
+const noteEl = document.getElementById('note');
+const replicasEl = document.getElementById('replicas');
+
+let eg = null;
+const online = PEOPLE.map(() => true);
+const waiting = PEOPLE.map(() => 0);   // local events made while offline
+const shown = PEOPLE.map(() => '');     // text currently in each editor
+let inspected = 0;
+const ui = [];
+
+// ---------- Replica cards ----------
+PEOPLE.forEach((p, i) => {
+  const card = document.createElement('article');
+  card.className = 'replica';
+  card.dataset.who = String(i);
+  card.innerHTML = `
+    <header>
+      <span class="who">${p.name} <span class="mono">agent “${p.agent}”</span></span>
+      <button class="toggle" type="button" aria-pressed="true">Online</button>
+    </header>
+    <textarea id="editor-${p.agent}" spellcheck="false" aria-label="${p.name}'s document" disabled></textarea>
+    <footer><span class="events">0 events</span><span class="waiting" hidden></span></footer>`;
+  replicasEl.append(card);
+  const editor = card.querySelector('textarea');
+  const toggle = card.querySelector('.toggle');
+  editor.addEventListener('animationend', () => editor.classList.remove('flash'));
+  ui.push({ card, editor, toggle, events: card.querySelector('.events'), waitingEl: card.querySelector('.waiting') });
+  editor.addEventListener('input', () => {
+    const d = diffScalars(shown[i], editor.value);
+    applyLocal(i, d.pos, d.deleteCount, d.insert, { fromEditor: true });
+  });
+  toggle.addEventListener('click', () => setOnline(i, !online[i]));
+});
+
+const pick = document.getElementById('pick');
+PEOPLE.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = p.name;
+  b.setAttribute('aria-pressed', String(i === inspected));
+  b.addEventListener('click', () => { inspected = i; renderInspector(); });
+  pick.append(b);
+});
+
+// ---------- Editing and syncing ----------
+function applyLocal(r, pos, deleteCount, insert, { fromEditor = false } = {}) {
+  const before = eg.eventCount(r);
+  if (deleteCount > 0) eg.delete(r, pos, deleteCount);
+  if (insert) eg.insert(r, pos, insert);
+  const made = eg.eventCount(r) - before;
+  const changed = new Set([r]);
+  if (online[r]) {
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o] && eg.merge(o, r) > 0) changed.add(o);
+  } else {
+    waiting[r] += made;
+  }
+  refresh(changed, fromEditor ? r : -1);
+}
+
+function setOnline(r, value) {
+  online[r] = value;
+  const changed = new Set([r]);
+  if (value) {
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o] && eg.merge(r, o) > 0) changed.add(r);
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o] && eg.merge(o, r) > 0) changed.add(o);
+    waiting[r] = 0;
+  }
+  refresh(changed, -1);
+}
+
+function syncEveryone() {
+  for (let a = 0; a < PEOPLE.length; a++) for (let b = 0; b < PEOPLE.length; b++) if (a !== b && online[a] && online[b]) eg.merge(a, b);
+}
+
+// ---------- Rendering ----------
+const replayMs = PEOPLE.map(() => 0);
+
+function refresh(changed, typedIn) {
+  for (const r of changed) {
+    const t0 = performance.now();
+    const text = eg.text(r);
+    replayMs[r] = performance.now() - t0;
+    const u = ui[r];
+    if (r === typedIn) {
+      if (text !== u.editor.value) setEditor(r, text, false); // shouldn't happen; trust the engine
+      shown[r] = text;
+    } else if (text !== shown[r]) {
+      setEditor(r, text, true);
+    }
+  }
+  renderCards();
+  renderInspector();
+}
+
+// Replaces an editor's text while keeping the caret in place relative to the text around it.
+function setEditor(r, text, flash) {
+  const { editor } = ui[r];
+  const old = shown[r];
+  const focused = document.activeElement === editor;
+  let sel = [editor.selectionStart, editor.selectionEnd];
+  if (focused) {
+    const d = diffScalars(old, text);
+    const toScalar = (u16) => Array.from(old.slice(0, u16)).length;
+    const shift = (s) => (s <= d.pos ? s : Math.max(d.pos + Array.from(d.insert).length, s - d.deleteCount + Array.from(d.insert).length));
+    const back = (s) => Array.from(text).slice(0, s).join('').length;
+    sel = sel.map((u16) => back(shift(toScalar(u16))));
+  }
+  editor.value = text;
+  shown[r] = text;
+  if (focused) editor.setSelectionRange(sel[0], sel[1]);
+  if (flash) {
+    editor.classList.remove('flash');
+    void editor.offsetWidth; // restart the animation
+    editor.classList.add('flash');
+  }
+}
+
+function renderCards() {
+  PEOPLE.forEach((p, r) => {
+    const u = ui[r];
+    u.card.classList.toggle('offline', !online[r]);
+    u.toggle.setAttribute('aria-pressed', String(online[r]));
+    u.toggle.textContent = online[r] ? 'Online' : 'Offline';
+    u.toggle.setAttribute('aria-label', `${p.name} is ${online[r] ? 'online' : 'offline'}. Toggle.`);
+    const n = eg.eventCount(r);
+    u.events.textContent = `${n.toLocaleString('en')} event${n === 1 ? '' : 's'}`;
+    u.waitingEl.hidden = online[r] || waiting[r] === 0;
+    u.waitingEl.textContent = `${waiting[r].toLocaleString('en')} not shared yet`;
+  });
+}
+
+const fmt = (n) => n.toLocaleString('en');
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function renderInspector() {
+  [...pick.children].forEach((b, i) => b.setAttribute('aria-pressed', String(i === inspected)));
+  const s = eg.state(inspected, 80);
+  const st = s.stats;
+  const name = PEOPLE[inspected].name;
+  const total = st.fastForwarded + st.tracked;
+  document.getElementById('summary').innerHTML = total === 0
+    ? `${name}'s replica has no events yet. Type something.`
+    : `Replaying ${name}'s <strong>${fmt(s.events)}</strong> events: <strong>${fmt(st.fastForwarded)}</strong> applied directly, <strong>${fmt(st.tracked)}</strong> needed temporary CRDT state${st.sessions ? ` (${fmt(st.sessions)} session${st.sessions === 1 ? '' : 's'}, then discarded)` : ''}.`;
+  document.getElementById('bar-ff').style.width = total ? `${(st.fastForwarded / total) * 100}%` : '0';
+  document.getElementById('bar-tr').style.width = total ? `${(st.tracked / total) * 100}%` : '0';
+  const heads = s.heads.map(([a, q]) => `${a}@${q}`).join(', ') || '–';
+  document.getElementById('facts').innerHTML = [
+    ['Events', fmt(s.events)],
+    ['Stored as', `${fmt(s.graphEntries)} graph entr${s.graphEntries === 1 ? 'y' : 'ies'}, ${fmt(s.opRuns)} op run${s.opRuns === 1 ? '' : 's'} (run-length encoded)`],
+    ['Current version', heads],
+    ['Undo / redo while replaying', `${fmt(st.retreated)} / ${fmt(st.advanced)}`],
+    ['Replay time', replayMs[inspected] < 0.1 ? 'under 0.1 ms in WebAssembly' : `${replayMs[inspected].toFixed(1)} ms in WebAssembly`],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+  drawGraph(s);
+}
+
+function drawGraph(s) {
+  const svg = document.getElementById('graph');
+  const runs = s.runs;
+  const rowH = 30, lane = 26, left = 18, labelX = left + lane * 3 + 10, width = 640;
+  const height = Math.max(rowH, runs.length * rowH + 12);
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  const laneOf = (agent) => Math.max(0, PEOPLE.findIndex((p) => p.agent === agent));
+  const colorOf = (agent) => `var(--${PEOPLE[laneOf(agent)].agent})`;
+  const x = (agent) => left + laneOf(agent) * lane;
+  const y = (i) => 18 + i * rowH;
+  const rowOf = (agent, seq) => runs.findIndex((r) => r.agent === agent && seq >= r.seq && seq < r.seq + r.len);
+  let edges = '', nodes = '';
+  if (runs.length === 0) {
+    svg.innerHTML = `<text x="16" y="20" style="fill: var(--ink-3); font: 12.5px var(--font-body)">No events yet.</text>`;
+    return;
+  }
+  runs.forEach((run, i) => {
+    for (const [agent, seq] of run.parents) {
+      const j = rowOf(agent, seq);
+      const x1 = x(run.agent), y1 = y(i), x0 = x(agent);
+      if (j >= 0) {
+        const y0 = y(j);
+        edges += `<path d="M${x0},${y0} C${x0},${(y0 + y1) / 2} ${x1},${(y0 + y1) / 2} ${x1},${y1}" style="fill: none; stroke: var(--ink-3); stroke-width: 1.2; opacity: 0.7"/>`;
+      } else {
+        edges += `<path d="M${x1},${y1} L${x1},${Math.max(0, y1 - rowH + 6)}" style="fill: none; stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 2 3"/>`;
+      }
+    }
+    const merge = run.parents.length > 1;
+    nodes += `<circle cx="${x(run.agent)}" cy="${y(i)}" r="${merge ? 6 : 5}" style="fill: ${merge ? 'var(--surface)' : colorOf(run.agent)}; stroke: ${colorOf(run.agent)}; stroke-width: 2"/>`;
+    const what = run.kind === 'ins'
+      ? `insert “${esc(trim(run.content))}” at ${run.pos}`
+      : `delete ${fmt(run.len)} char${run.len === 1 ? '' : 's'} at ${run.pos}`;
+    const range = run.len === 1 ? `${run.seq}` : `${run.seq}–${run.seq + run.len - 1}`;
+    nodes += `<text x="${labelX}" y="${y(i) + 4}" style="font: 12px var(--font-mono); fill: var(--ink-2); white-space: pre"><tspan style="fill: ${colorOf(run.agent)}; font-weight: 500">${run.agent} ${range}</tspan>  ${what}${merge ? '  · merge' : ''}</text>`;
+  });
+  svg.innerHTML = edges + nodes;
+  const wrap = document.getElementById('graph-wrap');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function trim(t) {
+  const s = Array.from(t.replace(/\n/g, '⏎'));
+  return s.length > 28 ? s.slice(0, 27).join('') + '…' : s.join('');
+}
+
+// ---------- Scenarios ----------
+const typeAt = (r, pos, text) => { let p = pos; for (const ch of Array.from(text)) { applyLocal(r, p, 0, ch); p++; } };
+const findPos = (r, needle) => { const i = shown[r].indexOf(needle); return i < 0 ? 0 : Array.from(shown[r].slice(0, i)).length; };
+
+function reset(base = '') {
+  eg.reset(PEOPLE.map((p) => p.agent));
+  online.fill(true); waiting.fill(0); shown.fill('');
+  ui.forEach((u) => { u.editor.value = ''; });
+  if (base) applyLocal(0, 0, 0, base);
+  refresh(new Set([0, 1, 2]), -1);
+}
+
+const scenarios = {
+  reset() {
+    reset();
+    say('Empty document, everyone online. Start typing in any editor.');
+  },
+  same() {
+    reset('Hello');
+    setOnline(0, false); setOnline(1, false);
+    typeAt(0, 5, ' world');
+    typeAt(1, 5, '!');
+    say('<strong>Alice and Bob are offline</strong> and both typed at the end of “Hello”. Press <em>Online</em> on both to merge. Both will see the same result: when two inserts land at the same spot, the author whose name sorts first (“alice”) goes first.');
+  },
+  lists() {
+    reset('Shopping list:\n');
+    setOnline(0, false); setOnline(1, false);
+    typeAt(0, 15, '- milk\n- eggs\n');
+    typeAt(1, 15, '- coffee\n- bread\n');
+    say('Alice and Bob each typed a list at the same spot while offline, one character at a time. Bring them both online: each list stays in one piece instead of being interleaved letter by letter.');
+  },
+  rewrite() {
+    reset('The meeting is on Monday at 10.');
+    setOnline(2, false);
+    let p = findPos(2, 'Monday');
+    applyLocal(2, p, 6, 'Tuesday');
+    p = Array.from(shown[0]).length;
+    typeAt(0, p, ' Bring the slides.');
+    p = findPos(1, '10');
+    applyLocal(1, p, 2, '11');
+    say('Carol went offline and changed “Monday” to “Tuesday”. Meanwhile Alice added a sentence and Bob changed the time. Bring Carol back online: all three changes survive.');
+  },
+  big() {
+    reset('Start. ');
+    for (let r = 0; r < 3; r++) setOnline(r, false);
+    let seed = 7;
+    const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const t0 = performance.now();
+    for (let r = 0; r < 3; r++) {
+      let len = 7;
+      for (let i = 0; i < 5000; i++) {
+        const pos = rnd(len + 1);
+        eg.insert(r, pos, 'etaoinshrdlu '[rnd(12)]);
+        len++;
+      }
+      waiting[r] = 5000;
+    }
+    const typed = performance.now() - t0;
+    refresh(new Set([0, 1, 2]), -1);
+    say(`Each replica made 5,000 random edits while offline (${typed.toFixed(0)} ms in total). Now bring them online one by one. The inspector shows how long the replay takes once all 15,000 concurrent events meet.`);
+  },
+};
+
+function say(html) { noteEl.innerHTML = html; }
+
+document.querySelectorAll('[data-scenario]').forEach((b) =>
+  b.addEventListener('click', () => { if (eg) scenarios[b.dataset.scenario](); }));
+
+// ---------- Start ----------
+try {
+  eg = await loadEngine(new URL('./egwalker.wasm', import.meta.url));
+  statusEl.className = 'status ready';
+  statusEl.innerHTML = `<span><span class="dot"></span>Swift engine ready</span><span>compiled to WebAssembly · started in ${eg.loadMs.toFixed(0)} ms</span>`;
+  ui.forEach((u) => { u.editor.disabled = false; });
+  reset();
+  typeAt(0, 0, 'Hello');
+  say('Online replicas sync on every keystroke. Offline replicas keep their edits until they reconnect. Pick a scenario above, or just type.');
+} catch (err) {
+  console.error(err);
+  statusEl.className = 'status error';
+  statusEl.textContent = `The WebAssembly engine could not start here (${err.message}). The demo needs a browser that allows WebAssembly.`;
+}
+</script>
+</body>
+</html>

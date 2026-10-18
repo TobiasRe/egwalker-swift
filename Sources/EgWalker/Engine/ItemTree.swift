@@ -1,7 +1,10 @@
 /// LVs at or above this value are *placeholders*: stand-ins for characters that
 /// existed before the walker started tracking (see `Walker`). Placeholder `k` is
 /// the k-th character of the document at that point.
-let placeholderBase = 1 << 60
+// Placeholder LVs live above every real LV. On 32-bit platforms (WebAssembly's
+// wasm32) `1 << 60` would silently shift to 0, so use 2^30 there: that still allows
+// ~1 billion events and a ~1 billion character document per CRDT session.
+let placeholderBase = Int.bitWidth == 64 ? 1 << 60 : 1 << 30
 @inline(__always) func isPlaceholder(_ lv: Int) -> Bool { lv >= placeholderBase }
 
 /// CRDT state values for `Span.cur`.

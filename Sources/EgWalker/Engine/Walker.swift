@@ -1,4 +1,13 @@
-import Foundation
+// Only libc is needed (getenv). Avoiding Foundation keeps the WebAssembly build small.
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WASILibc)
+import WASILibc
+#endif
 
 /// The optimized Eg-walker.
 ///

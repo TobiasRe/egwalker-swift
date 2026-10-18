@@ -1,4 +1,6 @@
+#if canImport(Foundation) && !os(WASI)
 import Foundation
+#endif
 
 /// Importers for the editing-trace formats used by the Eg-walker paper and the
 /// diamond-types test suite. Both are JSON.
@@ -84,6 +86,10 @@ public enum TraceImport {
         return oplog
     }
 
+    // File loaders need Foundation. They are left out of WebAssembly builds so the
+    // library doesn't pull Foundation (and its ICU data) into the binary. The
+    // trace types are plain `Decodable`, so callers can decode them themselves.
+    #if canImport(Foundation) && !os(WASI)
     public static func loadDTExport(_ url: URL) throws -> DTExport {
         try JSONDecoder().decode(DTExport.self, from: Data(contentsOf: url))
     }
@@ -93,4 +99,5 @@ public enum TraceImport {
     public static func loadConcurrentTrace(_ url: URL) throws -> ConcurrentTrace {
         try JSONDecoder().decode(ConcurrentTrace.self, from: Data(contentsOf: url))
     }
+    #endif
 }

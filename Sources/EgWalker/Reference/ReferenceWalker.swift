@@ -205,7 +205,7 @@ public enum ReferenceWalker {
         ctx.curVersion = common
         // Placeholder items standing in for the document at the common ancestor.
         let placeholderLength = (branch.version.max() ?? -1) + 1
-        let placeholderBase = 1 << 50
+        let placeholderBase = Int.bitWidth == 64 ? 1 << 50 : 1 << 30  // see ItemTree.swift
         for i in 0..<placeholderLength {
             let item = Item(opId: placeholderBase + i, curState: State.inserted, endState: State.inserted,
                             originLeft: -1, rightParent: -1)

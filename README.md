@@ -11,6 +11,9 @@ Kleppmann, EuroSys 2025).
   on heavily branched ones, with a fraction of the peak memory on concurrent traces
   (see [Benchmarks](#benchmarks)).
 
+> **Try it in the browser:** [`Demo/`](Demo/README.md) compiles the library to WebAssembly
+> and runs three replicas you can edit, take offline and merge.
+
 > Status: research-grade library, built in a day as a learning project. The core merge
 > algorithm is heavily tested; the public API is small and will change.
 > Documentation: [docs/](docs/README.md): concepts, API guide, architecture, testing,

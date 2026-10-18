@@ -1,4 +1,14 @@
-import Foundation
+// Only libc is needed (malloc/realloc/free). Avoiding Foundation keeps the
+// WebAssembly build small.
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WASILibc)
+import WASILibc
+#endif
 
 /// The document text, stored as a gap buffer of Unicode scalars.
 ///
