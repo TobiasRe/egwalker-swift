@@ -88,30 +88,30 @@ final class ItemTree {
     static let nodeCap = 16
 
     // Leaves
-    private(set) var spans: UnsafeMutablePointer<Span>
-    private(set) var leafLen: UnsafeMutablePointer<Int32>
-    private var leafParent: UnsafeMutablePointer<Int32>
-    private(set) var leafNext: UnsafeMutablePointer<Int32>
-    private var leafCapacity: Int
-    private(set) var leafCount: Int = 0
+    @exclusivity(unchecked) private(set) var spans: UnsafeMutablePointer<Span>
+    @exclusivity(unchecked) private(set) var leafLen: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var leafParent: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private(set) var leafNext: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var leafCapacity: Int
+    @exclusivity(unchecked) private(set) var leafCount: Int = 0
 
     // Internal nodes
-    private var children: UnsafeMutablePointer<Int32>
-    private var childAgg: UnsafeMutablePointer<Agg>
-    private var nodeLen: UnsafeMutablePointer<Int32>
-    private var nodeParent: UnsafeMutablePointer<Int32>
-    private var nodeLevel: UnsafeMutablePointer<Int32>  // 1 = children are leaves
-    private var nodeCapacity: Int
-    private var nodeCount: Int = 0
+    @exclusivity(unchecked) private var children: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var childAgg: UnsafeMutablePointer<Agg>
+    @exclusivity(unchecked) private var nodeLen: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var nodeParent: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var nodeLevel: UnsafeMutablePointer<Int32>  // 1 = children are leaves
+    @exclusivity(unchecked) private var nodeCapacity: Int
+    @exclusivity(unchecked) private var nodeCount: Int = 0
 
-    private var root: Int32 = 0
-    private var height: Int = 0  // 0: root is a leaf
+    @exclusivity(unchecked) private var root: Int32 = 0
+    @exclusivity(unchecked) private var height: Int = 0  // 0: root is a leaf
     private(set) var total = Agg()
 
     /// LV -> leaf, for real (non-placeholder) inserted items. Indexed by `lv - lvBase`.
-    private var leafOf: UnsafeMutablePointer<Int32>
-    private var leafOfCapacity: Int
-    private var lvBase: Int = 0
+    @exclusivity(unchecked) private var leafOf: UnsafeMutablePointer<Int32>
+    @exclusivity(unchecked) private var leafOfCapacity: Int
+    @exclusivity(unchecked) private var lvBase: Int = 0
 
     init(lvCapacity: Int = 0) {
         leafCapacity = 16

@@ -15,17 +15,26 @@ final class Walker {
     let oplog: OpLog
     let doc: GapBuffer
 
-    private var tree: ItemTree?
-    private var tracking = false
+    // Performance note: `@exclusivity(unchecked)` turns off Swift's *dynamic*
+    // exclusivity checks for these fields. The walker is single-threaded and never
+    // passes these properties inout while also reading them, so the checks can't
+    // fire — but they cost ~10% of the runtime in the hot loop. The test suite
+    // (incl. the debug build, where the rest of the checks stay on) guards this.
+    @exclusivity(unchecked) private var tree: ItemTree?
+    @exclusivity(unchecked) private var tracking = false
     /// The version the tracker's `cur` states represent.
-    private var curVersion: [LV] = []
+    @exclusivity(unchecked) private var curVersion = ContiguousArray<LV>()
+    /// Scratch for `moveTracker`: queue entries encoded as `lv << 2 | flag`.
+    @exclusivity(unchecked) private var diffQueue: UnsafeMutablePointer<Int> = .allocate(capacity: 64)
+    @exclusivity(unchecked) private var diffQueueCap = 64
+    @exclusivity(unchecked) private var diffAdvance = ContiguousArray<LVRange>()
     /// delTarget[lv - trackBase] = LV of the item deleted by delete event `lv`.
-    private var delTarget: UnsafeMutablePointer<Int>?
-    private var delTargetCapacity = 0
-    private var trackBase = 0
+    @exclusivity(unchecked) private var delTarget: UnsafeMutablePointer<Int>?
+    @exclusivity(unchecked) private var delTargetCapacity = 0
+    @exclusivity(unchecked) private var trackBase = 0
 
     /// Statistics, useful for understanding what the walker did.
-    private(set) var stats = Stats()
+    @exclusivity(unchecked) private(set) var stats = Stats()
     struct Stats {
         var fastForwarded = 0
         var tracked = 0
@@ -42,7 +51,7 @@ final class Walker {
         self.doc = doc
     }
 
-    deinit { delTarget?.deallocate() }
+    deinit { delTarget?.deallocate(); diffQueue.deallocate() }
 
     // MARK: - Planning
 
@@ -64,24 +73,30 @@ final class Walker {
         var laterMin = [Int](repeating: Int.max, count: n + 1)
         var i = n - 1
         while i >= 0 {
-            laterMin[i] = Swift.min(laterMin[i + 1], entries[i].parents.first ?? -1)
+            laterMin[i] = Swift.min(laterMin[i + 1], cg.parents(entries[i]).first ?? -1)
             i -= 1
         }
         var critEnd = [LV](repeating: 0, count: n)
-        var frontier: [LV] = []
+        // The frontier as an unordered set; we only ever need its size.
+        var frontier = ContiguousArray<LV>()
         var region = 0, maxRegion = 0
         for i in 0..<n {
             let e = entries[i]
-            let afterFirst = CausalGraph.advanceFrontier(frontier, vLast: e.version, parents: e.parents)
-            let single = afterFirst.count == 1
+            let ps = cg.parents(e)
+            // Remove parents from the frontier, add this event.
+            var j = 0
+            while j < frontier.count {
+                if ps.contains(frontier[j]) { frontier.swapAt(j, frontier.count - 1); frontier.removeLast() }
+                else { j += 1 }
+            }
+            frontier.append(e.vEnd - 1)
+            let single = frontier.count == 1
             var ce = e.version
             if single {
                 let bound = laterMin[i + 1]
                 ce = bound == Int.max ? e.vEnd : Swift.min(e.vEnd, Swift.max(e.version, bound + 1))
             }
             critEnd[i] = ce
-            frontier = CausalGraph.advanceFrontier(frontier, vLast: e.vEnd - 1, parents: e.parents)
-            // Track the longest run of non-critical events (sizes tracker buffers).
             if ce > e.version { region = 0 }
             region += e.vEnd - ce
             maxRegion = Swift.max(maxRegion, region)
@@ -94,7 +109,8 @@ final class Walker {
     func checkout() {
         let cg = oplog.cg
         let (critEnd, maxRegion) = Self.plan(cg)
-        var ffVersion: [LV] = []
+        var ffVersion = ContiguousArray<LV>()
+        var single = ContiguousArray<LV>([0])
 
         oplog.content.withUnsafeBufferPointer { content in
             for (i, e) in cg.entries.enumerated() {
@@ -104,12 +120,17 @@ final class Walker {
                     // version, so positions are valid as-is.
                     if tracking { stopTracking() }
                     fastForward(e.version, ce, content)
-                    ffVersion = [ce - 1]
+                    ffVersion.removeAll(keepingCapacity: true)
+                    ffVersion.append(ce - 1)
                 }
                 if ce < e.vEnd {
-                    if !tracking { startTracking(at: ce, version: ffVersion, capacity: maxRegion) }
-                    let parents = ce > e.version ? [ce - 1] : e.parents
-                    trackedApply(ce, e.vEnd, parents: parents, content, toDoc: true)
+                    if !tracking { startTracking(at: ce, version: ffVersion[...], capacity: maxRegion) }
+                    if ce > e.version {
+                        single[0] = ce - 1
+                        trackedApply(ce, e.vEnd, parents: single[...], content, toDoc: true)
+                    } else {
+                        trackedApply(ce, e.vEnd, parents: cg.parents(e), content, toDoc: true)
+                    }
                 }
             }
         }
@@ -149,7 +170,7 @@ final class Walker {
 
     // MARK: - Tracking
 
-    private func startTracking(at base: LV, version: [LV], capacity: Int) {
+    private func startTracking(at base: LV, version: ArraySlice<LV>, capacity: Int) {
         tracking = true
         stats.trackingSessions += 1
         trackBase = base
@@ -169,7 +190,8 @@ final class Walker {
             t.insertSpan(Span(lv: placeholderBase, originLeft: -1, rightParent: -1, len: Int32(docLen),
                               cur: ItemState.inserted, endDeleted: false), leaf: t.firstLeaf, at: 0)
         }
-        curVersion = version
+        curVersion.removeAll(keepingCapacity: true)
+        curVersion.append(contentsOf: version)
     }
 
     private func stopTracking() {
@@ -182,13 +204,9 @@ final class Walker {
 
     /// Applies events [start, end) (one causal-graph run with the given parents)
     /// through the CRDT.
-    func trackedApply(_ start: LV, _ end: LV, parents: [LV], _ content: UnsafeBufferPointer<Unicode.Scalar>, toDoc: Bool) {
+    func trackedApply(_ start: LV, _ end: LV, parents: ArraySlice<LV>, _ content: UnsafeBufferPointer<Unicode.Scalar>, toDoc: Bool) {
         stats.tracked += end - start
-        if curVersion != parents {
-            let (retreat, advance) = oplog.cg.diff(curVersion, parents)
-            for r in retreat.reversed() { applyDelta(r, -1) }
-            for r in advance { applyDelta(r, +1) }
-        }
+        if !curVersion.elementsEqual(parents) { moveTracker(to: parents) }
         forEachOpPiece(start, end) { run, a, b in
             switch run.kind {
             case .insert:
@@ -203,8 +221,93 @@ final class Walker {
                 }
             }
         }
-        curVersion = [end - 1]
+        curVersion.removeAll(keepingCapacity: true)
+        curVersion.append(end - 1)
         if debugChecks { tree!.checkInvariants() }
+    }
+
+    /// Moves the tracker from `curVersion` to `target`: retreat every event only
+    /// in curVersion's history, advance every event only in target's history.
+    ///
+    /// Same algorithm as `CausalGraph.diff`, but allocation-free: the queue is a
+    /// tiny sorted array (it rarely holds more than a handful of versions), and
+    /// retreats are applied the moment they're discovered (they come out in
+    /// descending order, which is exactly the order retreating needs).
+    private func moveTracker(to target: ArraySlice<LV>) {
+        let cg = oplog.cg
+        diffAdvance.removeAll(keepingCapacity: true)
+        // Ascending sorted queue of (lv << 2 | flag). Max is at the end.
+        var q = diffQueue
+        var qCount = 0
+        var numShared = 0
+        let fA = Int(DiffFlag.a.rawValue), fB = Int(DiffFlag.b.rawValue), fShared = Int(DiffFlag.shared.rawValue)
+
+        @inline(__always) func enq(_ v: LV, _ flag: Int) {
+            var i = qCount
+            while i > 0 && (q[i - 1] >> 2) > v { i -= 1 }
+            if i > 0 && (q[i - 1] >> 2) == v {
+                let cur = q[i - 1] & 3
+                if flag != cur && cur != fShared {
+                    q[i - 1] = (v << 2) | fShared
+                    numShared += 1
+                }
+                return
+            }
+            if qCount == diffQueueCap {
+                let nq = UnsafeMutablePointer<Int>.allocate(capacity: diffQueueCap * 2)
+                nq.update(from: q, count: qCount)
+                q.deallocate()
+                q = nq
+                diffQueue = nq
+                diffQueueCap *= 2
+            }
+            memmoveElements(q + i + 1, q + i, qCount - i)
+            q[i] = (v << 2) | flag
+            qCount += 1
+            if flag == fShared { numShared += 1 }
+        }
+
+        var pendingRetreat = LVRange(0, 0)
+        @inline(__always) func markRun(_ start: LV, _ endInclusive: LV, _ flag: Int) {
+            let end = endInclusive + 1
+            if flag == fA {
+                if !pendingRetreat.isEmpty && pendingRetreat.start == end { pendingRetreat.start = start }
+                else {
+                    if !pendingRetreat.isEmpty { applyDelta(pendingRetreat, -1) }
+                    pendingRetreat = LVRange(start, end)
+                }
+            } else if flag == fB {
+                if let last = diffAdvance.last, last.start == end { diffAdvance[diffAdvance.count - 1].start = start }
+                else { diffAdvance.append(LVRange(start, end)) }
+            }
+        }
+
+        for v in curVersion { enq(v, fA) }
+        for v in target { enq(v, fB) }
+
+        while qCount > numShared {
+            qCount -= 1
+            var v = q[qCount] >> 2
+            var flag = q[qCount] & 3
+            if flag == fShared { numShared -= 1 }
+            let e = cg.findEntry(v)
+            while qCount > 0 && (q[qCount - 1] >> 2) >= e.version {
+                qCount -= 1
+                let v2 = q[qCount] >> 2
+                let flag2 = q[qCount] & 3
+                if flag2 == fShared { numShared -= 1 }
+                if flag2 != flag {
+                    markRun(v2 + 1, v, flag)
+                    v = v2
+                    flag = fShared
+                }
+            }
+            markRun(e.version, v, flag)
+            for p in cg.parents(e) { enq(p, flag) }
+        }
+        if !pendingRetreat.isEmpty { applyDelta(pendingRetreat, -1) }
+        var k = diffAdvance.count - 1
+        while k >= 0 { applyDelta(diffAdvance[k], +1); k -= 1 }
     }
 
     /// Retreats (-1) or advances (+1) every event in `r`.

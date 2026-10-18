@@ -191,7 +191,7 @@ public struct OpLog: Sendable {
                 let e = other.cg.entries[entryIdx]
                 let end = Swift.min(run.lvEnd, e.vEnd)
                 let raw = other.cg.lvToRaw(lv)
-                let parents = (lv == e.version ? e.parents : [lv - 1]).map { other.cg.lvToRaw($0) }
+                let parents = (lv == e.version ? Array(other.cg.parents(e)) : [lv - 1]).map { other.cg.lvToRaw($0) }
                 let lvParents = parents.map { cg.rawToLV($0)! }
                 if let added = cg.add(agent: raw.agent, seqStart: raw.seq, seqEnd: raw.seq + (end - lv), parents: lvParents) {
                     // Some prefix might have been known already.

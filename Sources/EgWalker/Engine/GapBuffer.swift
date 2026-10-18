@@ -9,11 +9,11 @@
 /// widens the buffer to 4 bytes per scalar. Most documents never widen, which
 /// keeps the memory footprint at ~1 byte per character.
 final class GapBuffer {
-    private var narrow: UnsafeMutablePointer<UInt8>?
-    private var wide: UnsafeMutablePointer<UInt32>?
-    private var capacity: Int
-    private var gapStart: Int = 0
-    private var gapEnd: Int
+    @exclusivity(unchecked) private var narrow: UnsafeMutablePointer<UInt8>?
+    @exclusivity(unchecked) private var wide: UnsafeMutablePointer<UInt32>?
+    @exclusivity(unchecked) private var capacity: Int
+    @exclusivity(unchecked) private var gapStart: Int = 0
+    @exclusivity(unchecked) private var gapEnd: Int
 
     init(capacity: Int = 64) {
         self.capacity = Swift.max(capacity, 16)

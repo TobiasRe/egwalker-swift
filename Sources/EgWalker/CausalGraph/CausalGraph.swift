@@ -36,13 +36,19 @@ typealias AgentID = Int32
 /// sequence numbers, where every event (except the first) has exactly one parent:
 /// the event right before it. Typing a word produces one entry, not one per key.
 
+///
+/// The entry is plain old data (no arrays inside): its parents live in the graph's
+/// shared `parentPool`. That keeps entries free of reference counting, which
+/// matters because the walker reads them millions of times.
 struct CGEntry: Sendable {
     var version: LV
     var vEnd: LV
     var agent: AgentID
+    /// Parents of the *first* event of the run (sorted ascending), as a slice of
+    /// `CausalGraph.parentPool`.
+    var parentsCount: Int32
     var seq: Int
-    /// Parents of the *first* event of the run. Sorted ascending.
-    var parents: [LV]
+    var parentsStart: Int
 }
 
 /// Per agent: which sequence numbers map to which local versions.
@@ -62,6 +68,7 @@ public struct CausalGraph: Sendable {
     public internal(set) var heads: [LV] = []
 
     var entries: ContiguousArray<CGEntry> = []
+    var parentPool: ContiguousArray<LV> = []
     var agentNames: [String] = []
     /// UTF-8 bytes of each agent name, cached for fast byte-wise comparisons.
     var agentBytes: [[UInt8]] = []
@@ -121,7 +128,8 @@ public struct CausalGraph: Sendable {
 
         let vEnd = version + (seqEnd - seqStart)
         parents.sort()
-        let entry = CGEntry(version: version, vEnd: vEnd, agent: agent, seq: seqStart, parents: parents)
+        let entry = CGEntry(version: version, vEnd: vEnd, agent: agent, parentsCount: Int32(parents.count),
+                            seq: seqStart, parentsStart: parentPool.count)
 
         // Try to extend the last entry instead of pushing a new one (RLE).
         if var last = entries.last,
@@ -131,6 +139,7 @@ public struct CausalGraph: Sendable {
             last.vEnd = vEnd
             entries[entries.count - 1] = last
         } else {
+            parentPool.append(contentsOf: parents)
             entries.append(entry)
         }
 
@@ -216,10 +225,16 @@ public struct CausalGraph: Sendable {
     
     func findEntry(_ v: LV) -> CGEntry { entries[findEntryIndex(v)] }
 
+    /// The parents of an entry's first event.
+    @inline(__always)
+    func parents(_ e: CGEntry) -> ArraySlice<LV> {
+        parentPool[e.parentsStart..<(e.parentsStart + Int(e.parentsCount))]
+    }
+
     /// The parents of a single event.
     public func parents(of v: LV) -> [LV] {
         let e = findEntry(v)
-        return v == e.version ? e.parents : [v - 1]
+        return v == e.version ? Array(parents(e)) : [v - 1]
     }
 
     public func lvToRaw(_ v: LV) -> RawVersion {
@@ -266,7 +281,7 @@ public struct CausalGraph: Sendable {
             if e.version >= vEnd { break }
             let s = Swift.max(vStart, e.version)
             let t = Swift.min(vEnd, e.vEnd)
-            try visit(s, t, s == e.version ? e.parents : [s - 1])
+            try visit(s, t, s == e.version ? Array(parents(e)) : [s - 1])
             idx += 1
         }
     }
@@ -342,7 +357,7 @@ extension CausalGraph {
             }
 
             markRun(e.version, v, flag)
-            for p in e.parents { enq(p, flag) }
+            for p in parents(e) { enq(p, flag) }
         }
 
         aOnly.reverse()
@@ -361,7 +376,7 @@ extension CausalGraph {
             let e = findEntry(v)
             if e.version <= target { return true }
             while let peek = queue.peek, peek >= e.version { queue.pop() }
-            for p in e.parents {
+            for p in parents(e) {
                 if p == target { return true }
                 if p > target { queue.push(p) }
             }
@@ -398,7 +413,7 @@ extension CausalGraph {
                 let v2 = queue.pop()!
                 if v2 & 1 == 0 { inputsRemaining -= 1 }
             }
-            for p in e.parents { queue.push(p * 2 + 1) }
+            for p in parents(e) { queue.push(p * 2 + 1) }
         }
         // Remove duplicates (the same input twice is only one dominator).
         result.reverse()
@@ -472,7 +487,7 @@ extension CausalGraph {
                     }
                 } else {
                     visit(LVRange(txnStart, end), flag)
-                    queue.push(point(containing.parents, flag))
+                    queue.push(point(Array(parents(containing)), flag))
                     break
                 }
             }
@@ -490,8 +505,9 @@ extension CausalGraph {
         for e in entries {
             precondition(e.version == expected, "entries must be contiguous")
             precondition(e.vEnd > e.version, "inverted entry")
-            for p in e.parents { precondition(p < e.version, "parent must precede child") }
-            precondition(e.parents == e.parents.sorted(), "parents must be sorted")
+            let ps = parents(e)
+            for p in ps { precondition(p < e.version, "parent must precede child") }
+            precondition(Array(ps) == ps.sorted(), "parents must be sorted")
             expected = e.vEnd
         }
         for (agent, list) in clientEntries.enumerated() {
