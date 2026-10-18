@@ -199,7 +199,7 @@ button { font: inherit; color: inherit; }
 </div>
 
 <script type="module">
-import { loadEngine, diffScalars } from './engine.js';
+import { loadEngine, diffScalars, wasmURL } from './engine.js';
 
 const PEOPLE = [
   { name: 'Alice', agent: 'alice' },
@@ -509,7 +509,7 @@ let wasmBytes = null;
 async function start() {
   try {
     if (!wasmBytes) {
-      const response = await fetch(new URL('./egwalker.wasm', import.meta.url));
+      const response = await fetch(wasmURL);
       if (!response.ok) throw new Error(`could not download the engine (HTTP ${response.status})`);
       wasmBytes = await response.arrayBuffer();
     }

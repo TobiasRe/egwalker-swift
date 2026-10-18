@@ -18,6 +18,13 @@ node check.mjs 1000                 # conformance + fuzzing inside the wasm32 ru
   and differential fuzzing against the reference walker *inside* WebAssembly, under
   Node's WASI. This is how the 32-bit build is verified (see below).
 
+## Hosting
+
+`web/` is a static site with no build step: three files (`index.html`, `engine.js`,
+`egwalker.wasm`). Any static host works as long as it serves `.wasm` files. The
+`gh-pages` branch holds a copy for GitHub Pages; the blog serves another at
+`tobiasre.me/eg-walker-playground`.
+
 ## Notes on the WebAssembly build
 
 - **32-bit `Int`.** wasm32 has 32-bit `Int`. The placeholder base used to be

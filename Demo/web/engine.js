@@ -56,7 +56,10 @@ function wasiShim(getMemory) {
   };
 }
 
-export async function loadEngine(url) {
+/** The compiled engine, next to this file (works wherever the folder is hosted). */
+export const wasmURL = new URL('./egwalker.wasm', import.meta.url);
+
+export async function loadEngine(url = wasmURL) {
   let memory;
   const wasi = wasiShim(() => memory);
   const imports = {
