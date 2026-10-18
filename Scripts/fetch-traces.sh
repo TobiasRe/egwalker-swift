@@ -2,7 +2,7 @@
 # Downloads the Eg-walker paper traces and diamond-types, builds the Rust
 # benchmark harness, and exports every .dt trace to JSON with the *original*
 # agent names (the paper's anonymised JSON loses them, which matters for
-# tie-breaking concurrent inserts — see LEARNING.md).
+# tie-breaking concurrent inserts — see docs/testing.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VENDOR=${VENDOR:-.vendor}

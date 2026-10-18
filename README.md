@@ -13,7 +13,8 @@ Kleppmann, EuroSys 2025).
 
 > Status: research-grade library, built in a day as a learning project. The core merge
 > algorithm is heavily tested; the public API is small and will change.
-> See [LEARNING.md](LEARNING.md) (German) for a guided walkthrough of every design decision.
+> Documentation: [docs/](docs/README.md): concepts, API guide, architecture, testing,
+> performance, design decisions and roadmap.
 
 ## Usage
 
@@ -31,6 +32,9 @@ alice.merge(from: bob)
 bob.merge(from: alice)
 assert(alice.checkout().text == bob.checkout().text)  // "Oh, Hello world"
 ```
+
+Positions count Unicode scalars, not UTF-16 units. See the [API guide](docs/api-guide.md) for
+syncing, open documents, preconditions and UIKit/AppKit offset conversion.
 
 `OpLog` is the only state you need to persist or sync. `checkout()` replays it into text;
 `checkoutDocument()` does the same without materialising a `String`. For an open document,
@@ -53,7 +57,9 @@ doc.merge(alice)
 4. Large concurrent regions are replayed depth-first, smallest subtree first, which halves the
    retreat/advance work on branchy histories.
 
-Details, including the experiments that did *not* work, are in [LEARNING.md](LEARNING.md).
+Details: [Concepts](docs/concepts.md), [Architecture](docs/architecture.md), and the
+[optimisation log](docs/performance.md#optimisation-log), including the experiments that did
+*not* work.
 
 ## Testing
 

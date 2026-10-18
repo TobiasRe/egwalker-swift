@@ -6,7 +6,7 @@ import Foundation
 /// near where they just typed. A gap buffer makes edits at the cursor O(1) and
 /// only pays (one memmove) when the cursor jumps. For replaying editing traces
 /// that is hard to beat, and it is ~150 lines with no allocation per edit.
-/// (We measured a chunked rope as an alternative: it was slower. See LEARNING.md.)
+/// (We measured a chunked rope as an alternative: it was slower. See docs/performance.md.)
 ///
 /// Storage width adapts to the content, like Python's strings (PEP 393):
 /// 1 byte per scalar while everything is Latin-1, 2 bytes once a BMP character

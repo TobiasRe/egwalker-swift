@@ -47,7 +47,7 @@ let correct = first.text == expected
 let stats = oplog.checkoutWithStats().stats
 
 // Memory: heap growth during one checkout, relative to the loaded oplog.
-memReset?()
+_ = memReset?()
 let base = memCurrent?() ?? 0
 var doc: TextDocument? = oplog.checkoutDocument()
 let peak = (memPeak?() ?? 0) - base

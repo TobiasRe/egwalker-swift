@@ -69,7 +69,7 @@ final class Walker {
     /// Concurrent regions with at least this many entries are replayed depth-first
     /// (see `processRegion`); smaller ones in LV order.
     ///
-    /// This threshold is empirical (sweep on the paper traces, see LEARNING.md):
+    /// This threshold is empirical (sweep on the paper traces, see docs/performance.md):
     /// the long-lived branches of the A traces gain 2-2.5x from depth-first order,
     /// while the C traces' short, rapidly synchronising regions get ~10-30%
     /// slower with it even though they do slightly *less* tracker movement.
@@ -807,7 +807,10 @@ extension OpLog {
 }
 
 /// A checked-out document: the text produced by replaying an oplog.
-public final class TextDocument: @unchecked Sendable {
+///
+/// Not thread-safe: `merge` mutates it in place. Confine each document to one
+/// thread or actor (it is deliberately not `Sendable`).
+public final class TextDocument {
     let buffer: GapBuffer
     public private(set) var version: [LV]
     init(buffer: GapBuffer, version: [LV]) { self.buffer = buffer; self.version = version }
