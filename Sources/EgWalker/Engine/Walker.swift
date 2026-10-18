@@ -68,10 +68,12 @@ final class Walker {
     /// while the C traces' short, rapidly synchronising regions get ~10-30%
     /// slower with it even though they do slightly *less* tracker movement.
     /// Overridable via EGWALKER_DFS_MIN for experiments.
-    nonisolated(unsafe) static var dfsMinEntries: Int = {
+    nonisolated(unsafe) static var defaultDfsMinEntries: Int = {
         if let s = getenv("EGWALKER_DFS_MIN"), let v = Int(String(cString: s)) { return v }
         return 64
     }()
+
+    var dfsMinEntries = Walker.defaultDfsMinEntries
 
     /// When true, the tree validates every invariant after each step (tests only).
     var debugChecks = false
@@ -200,7 +202,7 @@ final class Walker {
                 var j = i + 1
                 while j < n && critEnd[j] == entries[j].version { j += 1 }
                 if !tracking { startTracking(at: ce, version: ffVersion, capacity: maxRegion) }
-                if j - i >= Self.dfsMinEntries {
+                if j - i >= dfsMinEntries {
                     processRegion(firstEntry: i, firstStart: ce, endEntry: j)
                 } else {
                     for k in i..<j {
@@ -708,10 +710,11 @@ extension OpLog {
     }
 
     /// Checkout with full tree validation after every step. Slow; tests only.
-    func checkoutValidated() -> (text: String, stats: Walker.Stats) {
+    func checkoutValidated(dfsMinEntries: Int? = nil, validate: Bool = true) -> (text: String, stats: Walker.Stats) {
         let doc = GapBuffer(capacity: Swift.max(64, count / 8))
         let walker = Walker(oplog: self, doc: doc)
-        walker.debugChecks = true
+        walker.debugChecks = validate
+        if let d = dfsMinEntries { walker.dfsMinEntries = d }
         walker.checkout()
         return (Branch(scalars: doc.scalars).text, walker.stats)
     }

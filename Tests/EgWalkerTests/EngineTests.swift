@@ -84,5 +84,8 @@ struct PaperTraceDTTests {
         let oplog = TraceImport.oplog(from: data)
         oplog.cg.checkInvariants()
         #expect(oplog.checkout().text == data.endContent, "\(name)")
+        // Both traversal orders, on every region, must give the same document.
+        #expect(oplog.checkoutValidated(dfsMinEntries: 2, validate: false).text == data.endContent, "\(name) dfs")
+        #expect(oplog.checkoutValidated(dfsMinEntries: Int.max, validate: false).text == data.endContent, "\(name) lv")
     }
 }

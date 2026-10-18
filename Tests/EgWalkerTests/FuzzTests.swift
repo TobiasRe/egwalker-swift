@@ -76,6 +76,13 @@ struct FuzzTests {
                     Issue.record("seed \(seed) step \(step): optimized != reference\nopt: \(optimized.debugDescription)\nref: \(reference.debugDescription)")
                     return
                 }
+                // Same history through the depth-first region traversal (normally
+                // only used for regions of >= 64 entries).
+                let dfs = replicas[r].oplog.checkoutValidated(dfsMinEntries: 2, validate: validateTree).text
+                if dfs != reference {
+                    Issue.record("seed \(seed) step \(step): depth-first order != reference")
+                    return
+                }
                 replicas[r].text = Array(optimized.unicodeScalars)
             }
             // Local text must always agree with a fresh checkout.
@@ -96,6 +103,9 @@ struct FuzzTests {
         let finalRef = ReferenceWalker.checkout(all).text
         if final != finalRef {
             Issue.record("seed \(seed): final optimized != reference"); return
+        }
+        if all.checkoutValidated(dfsMinEntries: 2).text != finalRef {
+            Issue.record("seed \(seed): final depth-first != reference"); return
         }
         for i in 0..<numReplicas {
             replicas[i].oplog.merge(from: all)
