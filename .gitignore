@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+Benchmarks/data/
+Benchmarks/rust-dt-bench/target/
+Benchmarks/rust-dt-bench/build.log
+*.profraw
