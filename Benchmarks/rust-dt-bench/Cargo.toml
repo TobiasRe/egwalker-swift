@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-diamond-types = { path = "../../../vendor/diamond-types", default-features = false, features = ["lz4", "storage"] }
+diamond-types = { path = "../../.vendor/diamond-types", default-features = false, features = ["lz4", "storage"] }
 
 [profile.release]
 lto = true

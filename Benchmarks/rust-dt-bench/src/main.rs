@@ -27,6 +27,15 @@ unsafe impl GlobalAlloc for Counting {
 }
 #[global_allocator] static A: Counting = Counting;
 
+// When run under LD_PRELOAD=libmemtrack.so, use the same malloc-level tracker as
+// the Swift harness so both numbers are measured identically.
+extern "C" { fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void; }
+fn memtrack(name: &str) -> Option<extern "C" fn() -> i64> {
+    let c = std::ffi::CString::new(name).unwrap();
+    let p = unsafe { dlsym(std::ptr::null_mut(), c.as_ptr()) };
+    if p.is_null() { None } else { Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, extern "C" fn() -> i64>(p) }) }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = &args[1];
@@ -35,11 +44,16 @@ fn main() {
     let oplog = ListOpLog::load_from(&bytes).unwrap();
 
     // Memory: peak heap growth during one checkout, relative to the loaded oplog.
+    let (mt_cur, mt_peak) = (memtrack("memtrack_current"), memtrack("memtrack_peak"));
+    if let Some(reset) = memtrack("memtrack_reset_peak") { reset(); }
+    let mt_base = mt_cur.map(|f| f()).unwrap_or(0);
     let base = CUR.load(Relaxed);
     PEAK.store(base, Relaxed);
     let branch = oplog.checkout_tip();
-    let peak = PEAK.load(Relaxed) - base;
-    let retained = CUR.load(Relaxed) - base;
+    let (peak, retained) = match (mt_cur, mt_peak) {
+        (Some(c), Some(p)) => ((p() - mt_base) as usize, (c() - mt_base) as usize),
+        _ => (PEAK.load(Relaxed) - base, CUR.load(Relaxed) - base),
+    };
     let len = branch.len();
     drop(branch);
 

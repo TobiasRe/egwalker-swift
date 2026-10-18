@@ -1,0 +1,22 @@
+This project contains code derived from eg-walker-reference
+(https://github.com/josephg/eg-walker-reference) by Joseph Gentle, licensed under
+the BSD 2-Clause License. The derived parts are:
+
+  Sources/EgWalker/Reference/ReferenceWalker.swift   (port of src/index.ts)
+  Sources/EgWalker/CausalGraph/CausalGraph.swift     (port of src/causal-graph.ts)
+
+Test fixtures in Tests/EgWalkerTests/Fixtures are taken from the same repository.
+
+BSD 2-Clause License (as declared in the eg-walker-reference package.json):
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this
+   list of conditions and the following disclaimer in the documentation and/or
+   other materials provided with the distribution.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+EXPRESS OR IMPLIED WARRANTIES ... ARE DISCLAIMED.
+
+Benchmark baseline and trace tooling: diamond-types by Joseph Gentle (ISC).
