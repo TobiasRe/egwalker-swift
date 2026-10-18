@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eg-walker Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Three copies of one document, each running egwalker-swift compiled to WebAssembly. Disconnect one, keep editing, reconnect and watch the edits merge.">
+<meta property="og:title" content="Eg-walker playground">
+<meta property="og:description" content="Collaborative text editing with Eg-walker, running as Swift compiled to WebAssembly in your browser.">
+<meta name="theme-color" content="#eceff3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14181e" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M8 26V16M24 26V16M8 16C8 10 16 10 16 6M24 16C24 10 16 10 16 6' fill='none' stroke='%231b2430' stroke-width='3'/%3E%3Ccircle cx='16' cy='6' r='3.5' fill='%231f63a8'/%3E%3Ccircle cx='8' cy='26' r='3.5' fill='%232a7d3f'/%3E%3Ccircle cx='24' cy='26' r='3.5' fill='%23a1336f'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap">
+<style>
+/* Layout: three author lanes. Each lane starts with that author's copy of the
+   document and continues downward into the history, so an event sits in the
+   column of the person who made it. Text is left aligned throughout. */
+:root {
+  --page: #eceff3;
+  --sheet: #ffffff;
+  --ink: #1b2430;
+  --ink-soft: #4d5868;
+  --ink-faint: #667080;
+  --line: #d3d9e1;
+  --alice: #1f63a8;
+  --bob: #2a7d3f;
+  --carol: #a1336f;
+  --pending: #9a5b00;
+  --doc: "Literata", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --ui: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #14181e; --sheet: #1c2129; --ink: #e5e9ef; --ink-soft: #aab3c0; --ink-faint: #8b95a5;
+    --line: #2d3440; --alice: #7fb3ec; --bob: #79c98c; --carol: #e48bbd; --pending: #e7ad5c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #14181e; --sheet: #1c2129; --ink: #e5e9ef; --ink-soft: #aab3c0; --ink-faint: #8b95a5;
+  --line: #2d3440; --alice: #7fb3ec; --bob: #79c98c; --carol: #e48bbd; --pending: #e7ad5c;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 16px/1.55 var(--ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 56px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 32px; }
+h1, h2 { font-family: var(--doc); font-weight: 600; margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(2rem, 5vw, 2.75rem); line-height: 1.1; letter-spacing: -0.015em; }
+h2 { font-size: 1.3rem; line-height: 1.3; }
+p { margin: 0; }
+a { color: inherit; text-decoration-color: var(--ink-faint); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.alice { --who: var(--alice); }
+.bob { --who: var(--bob); }
+.carol { --who: var(--carol); }
+
+/* Intro */
+.intro { display: grid; gap: 14px; max-width: 62ch; }
+.intro p { color: var(--ink-soft); }
+#status { font-size: 14px; color: var(--ink-faint); }
+#status.failed { color: var(--pending); }
+
+/* Scenarios: a sentence with buttons in it */
+.scenarios { display: grid; gap: 10px; max-width: 70ch; }
+.scenarios p:first-child { color: var(--ink-soft); }
+.textbutton {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  color: var(--ink); font-weight: 600;
+  text-decoration: underline; text-decoration-color: var(--ink-faint); text-underline-offset: 3px;
+}
+.textbutton:hover { text-decoration-color: currentColor; }
+#note { min-height: 3.1em; }
+
+/* Lanes */
+.lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.sheet {
+  background: var(--sheet); border: 1px solid var(--line); border-top: 3px solid var(--who);
+  border-radius: 2px; display: grid; grid-template-rows: auto 1fr auto; min-width: 0;
+}
+.sheet.offline { border-style: dashed; border-top-style: solid; background: transparent; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 6px; }
+.name { font-family: var(--doc); font-weight: 600; font-size: 1.15rem; color: var(--who); }
+.connect {
+  border: 1px solid var(--line); background: var(--page); border-radius: 3px;
+  padding: 3px 10px; font-size: 13px; cursor: pointer; color: var(--ink-soft);
+}
+.connect:hover { border-color: var(--ink-faint); color: var(--ink); }
+.sheet textarea {
+  width: 100%; min-height: 9rem; resize: vertical; border: 0; outline: none;
+  padding: 6px 12px 12px; background: transparent; color: var(--ink);
+  font: 17px/1.55 var(--doc);
+}
+.sheet textarea:focus-visible { box-shadow: inset 2px 0 0 var(--who); }
+.sheet-foot { padding: 8px 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.sheet-foot .pending { color: var(--pending); }
+@keyframes merged { from { background-color: color-mix(in srgb, var(--who) 13%, transparent); } to { background-color: transparent; } }
+@media (prefers-reduced-motion: no-preference) {
+  .sheet textarea.flash { animation: merged 0.7s ease-out; }
+}
+
+/* History */
+.history-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; }
+.viewer { display: flex; gap: 14px; font-size: 15px; }
+.viewer button { border: 0; background: none; padding: 2px 0; cursor: pointer; color: var(--ink-faint); border-bottom: 2px solid transparent; }
+.viewer button[aria-pressed="true"] { color: var(--who); border-bottom-color: var(--who); font-weight: 600; }
+#summary { color: var(--ink-soft); max-width: 72ch; }
+#summary b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.history { position: relative; }
+.history svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.lane-names { display: none; }
+.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; min-height: 40px; align-items: center; }
+.event { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding-left: 12px; }
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--who); transform: translateY(1px); position: relative; z-index: 1; }
+.dot.merge { background: var(--page); box-shadow: inset 0 0 0 2px var(--who); width: 12px; height: 12px; }
+.what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--doc); }
+.what .del { font-family: var(--ui); font-size: 14px; color: var(--ink-soft); }
+.ids { flex: none; font-size: 12.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.history-empty { color: var(--ink-faint); padding: 8px 12px; }
+.older { font-size: 13px; color: var(--ink-faint); padding: 6px 12px 0; }
+.history svg path { fill: none; stroke: var(--ink-faint); stroke-width: 1.25; }
+.history svg path.cut { stroke-dasharray: 2 4; }
+
+/* About */
+.about { display: grid; gap: 12px; max-width: 66ch; color: var(--ink-soft); }
+.about h2 { color: var(--ink); }
+.page-foot { font-size: 14px; color: var(--ink-faint); max-width: 70ch; }
+
+@media (max-width: 760px) {
+  .lanes { grid-template-columns: minmax(0, 1fr); }
+  .lane-names { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0 0 6px; font-family: var(--doc); font-weight: 600; }
+  .lane-names span { color: var(--who); padding-left: 12px; border-bottom: 2px solid var(--who); }
+  .row, .lane-names { gap: 6px; }
+  .event { padding-left: 4px; gap: 6px; }
+  .ids { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="intro">
+    <h1>Eg-walker playground</h1>
+    <p>Alice, Bob and Carol each have a copy of the same document. Every copy runs <a href="https://github.com/TobiasRe/egwalker-swift">egwalker-swift</a>, compiled from Swift to WebAssembly. Type in any of them. Disconnect one, keep editing, then reconnect it and see how the edits merge.</p>
+    <p id="status" role="status">Loading the Swift engine…</p>
+    <noscript><p>This demo runs the library in your browser and needs JavaScript and WebAssembly.</p></noscript>
+  </header>
+
+  <section class="scenarios" aria-label="Scenarios">
+    <p>Or set up a situation:
+      <button class="textbutton" type="button" data-scenario="same">both type at the same spot</button>,
+      <button class="textbutton" type="button" data-scenario="lists">two lists written offline</button>,
+      <button class="textbutton" type="button" data-scenario="rewrite">an offline rewrite</button>,
+      <button class="textbutton" type="button" data-scenario="big">15,000 edits made apart</button>,
+      or <button class="textbutton" type="button" data-scenario="reset">start over</button>.
+    </p>
+    <p id="note" aria-live="polite"></p>
+  </section>
+
+  <section class="lanes" id="lanes" aria-label="Copies of the document"></section>
+
+  <section aria-labelledby="history-title" style="display: grid; gap: 14px;">
+    <div class="history-head">
+      <h2 id="history-title">History</h2>
+      <div class="viewer" id="viewer" role="group" aria-label="Whose copy to show"></div>
+    </div>
+    <p id="summary"></p>
+    <div class="history" id="history">
+      <div class="lane-names" aria-hidden="true"><span class="alice">Alice</span><span class="bob">Bob</span><span class="carol">Carol</span></div>
+      <div id="rows"></div>
+      <svg id="edges" aria-hidden="true"></svg>
+    </div>
+  </section>
+
+  <section class="about">
+    <h2>How it works</h2>
+    <p>Each copy is an <code>OpLog</code> from egwalker-swift. It records every edit as a plain position, such as “insert at 5”, together with the edits its author had already seen. Nothing else is stored.</p>
+    <p>Reconnecting calls <code>merge(from:)</code>, which copies over the edits a copy hasn't seen yet. The text you see is produced by <code>checkout()</code>, which replays the history. Where edits happened at the same time, it builds CRDT state for that stretch only and discards it afterwards. The summary above the history shows how much of the replay needed it.</p>
+    <p>In the history, newest edits are at the top. Each row is a run of consecutive edits by one person, placed in that person's column. Lines lead to the edits a run was based on, and a hollow dot marks a merge: its author had seen both branches.</p>
+  </section>
+
+  <p class="page-foot">Source: <a href="https://github.com/TobiasRe/egwalker-swift">TobiasRe/egwalker-swift</a> (MIT). The algorithm is from Joseph Gentle and Martin Kleppmann, <a href="https://arxiv.org/abs/2409.14252">Collaborative Text Editing with Eg-walker</a> (EuroSys 2025).</p>
+</div>
+
+<script type="module">
+import { loadEngine, diffScalars } from './engine.js';
+
+const PEOPLE = [
+  { name: 'Alice', agent: 'alice' },
+  { name: 'Bob', agent: 'bob' },
+  { name: 'Carol', agent: 'carol' },
+];
+const statusEl = document.getElementById('status');
+const noteEl = document.getElementById('note');
+
+let eg = null;
+const online = PEOPLE.map(() => true);
+const waiting = PEOPLE.map(() => 0);   // edits made while disconnected
+const shown = PEOPLE.map(() => '');     // text currently in each editor
+const replayMs = PEOPLE.map(() => 0);
+let viewing = 0;
+const ui = [];
+
+// ---------- Sheets ----------
+const lanesEl = document.getElementById('lanes');
+PEOPLE.forEach((p, i) => {
+  const sheet = document.createElement('article');
+  sheet.className = `sheet ${p.agent}`;
+  sheet.innerHTML = `
+    <div class="sheet-head">
+      <span class="name" id="name-${p.agent}">${p.name}</span>
+      <button class="connect" type="button">Disconnect</button>
+    </div>
+    <textarea id="editor-${p.agent}" spellcheck="false" aria-labelledby="name-${p.agent}" disabled></textarea>
+    <div class="sheet-foot"></div>`;
+  lanesEl.append(sheet);
+  const editor = sheet.querySelector('textarea');
+  const button = sheet.querySelector('.connect');
+  ui.push({ sheet, editor, button, foot: sheet.querySelector('.sheet-foot') });
+  editor.addEventListener('animationend', () => editor.classList.remove('flash'));
+  editor.addEventListener('input', guard(() => {
+    const d = diffScalars(shown[i], editor.value);
+    applyLocal(i, d.pos, d.deleteCount, d.insert, { fromEditor: true });
+  }));
+  button.addEventListener('click', guard(() => setOnline(i, !online[i])));
+});
+
+const viewerEl = document.getElementById('viewer');
+PEOPLE.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = p.agent;
+  b.textContent = `${p.name}'s copy`;
+  b.addEventListener('click', guard(() => { viewing = i; renderHistory(); }));
+  viewerEl.append(b);
+});
+
+// ---------- Editing and syncing ----------
+function applyLocal(r, pos, deleteCount, insert, { fromEditor = false } = {}) {
+  const before = eg.eventCount(r);
+  if (deleteCount > 0) eg.delete(r, pos, deleteCount);
+  if (insert) eg.insert(r, pos, insert);
+  const made = eg.eventCount(r) - before;
+  const changed = new Set([r]);
+  if (online[r]) {
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o] && eg.merge(o, r) > 0) changed.add(o);
+  } else {
+    waiting[r] += made;
+  }
+  refresh(changed, fromEditor ? r : -1);
+}
+
+function setOnline(r, value) {
+  online[r] = value;
+  const changed = new Set([r]);
+  if (value) {
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o]) eg.merge(r, o);
+    for (let o = 0; o < PEOPLE.length; o++) if (o !== r && online[o] && eg.merge(o, r) > 0) changed.add(o);
+    waiting[r] = 0;
+  }
+  refresh(changed, -1);
+}
+
+// ---------- Rendering ----------
+function refresh(changed, typedIn) {
+  for (const r of changed) {
+    const text = eg.text(r);
+    if (r === typedIn) {
+      if (text !== ui[r].editor.value) setEditor(r, text, false);
+      shown[r] = text;
+    } else if (text !== shown[r]) {
+      setEditor(r, text, true);
+    }
+  }
+  renderSheets();
+  scheduleHistory();
+}
+
+// The history view replays the whole log, so it is redrawn at most once per frame.
+let historyQueued = false;
+function scheduleHistory() {
+  if (historyQueued) return;
+  historyQueued = true;
+  requestAnimationFrame(() => { historyQueued = false; if (eg) guard(renderHistory)(); });
+}
+
+// Replaces an editor's text while keeping the caret next to the same text.
+function setEditor(r, text, flash) {
+  const { editor } = ui[r];
+  const old = shown[r];
+  const focused = document.activeElement === editor;
+  let sel = [editor.selectionStart, editor.selectionEnd];
+  if (focused) {
+    const d = diffScalars(old, text);
+    const inserted = Array.from(d.insert).length;
+    const toScalar = (u16) => Array.from(old.slice(0, u16)).length;
+    const shift = (s) => (s <= d.pos ? s : Math.max(d.pos + inserted, s - d.deleteCount + inserted));
+    const toU16 = (s) => Array.from(text).slice(0, s).join('').length;
+    sel = sel.map((u16) => toU16(shift(toScalar(u16))));
+  }
+  editor.value = text;
+  shown[r] = text;
+  if (focused) editor.setSelectionRange(sel[0], sel[1]);
+  if (flash) {
+    editor.classList.remove('flash');
+    void editor.offsetWidth; // restart the animation
+    editor.classList.add('flash');
+  }
+}
+
+const fmt = (n) => n.toLocaleString('en');
+const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function renderSheets() {
+  PEOPLE.forEach((p, r) => {
+    const u = ui[r];
+    u.sheet.classList.toggle('offline', !online[r]);
+    u.button.textContent = online[r] ? 'Disconnect' : 'Reconnect';
+    const events = plural(eg.eventCount(r), 'edit', 'edits');
+    if (online[r]) {
+      u.foot.textContent = `Connected. ${events} in this copy.`;
+    } else {
+      u.foot.innerHTML = `Disconnected. ${events} in this copy` +
+        (waiting[r] ? `, <span class="pending">${plural(waiting[r], 'edit', 'edits')} not shared yet</span>.` : '.');
+    }
+  });
+}
+
+function renderHistory() {
+  [...viewerEl.children].forEach((b, i) => b.setAttribute('aria-pressed', String(i === viewing)));
+  const t0 = performance.now();
+  eg.checkout(viewing);
+  replayMs[viewing] = performance.now() - t0;
+  const s = eg.state(viewing, 60);
+  const st = s.stats;
+  const who = PEOPLE[viewing].name;
+  const ms = replayMs[viewing] < 0.1 ? 'under 0.1 ms' : `${replayMs[viewing].toFixed(1)} ms`;
+  document.getElementById('summary').innerHTML = s.events === 0
+    ? `${who}'s copy is empty.`
+    : st.tracked === 0
+      ? `${who}'s copy holds <b>${fmt(s.events)}</b> edits. None of them happened at the same time as another, so replaying them needed no CRDT state at all (${ms}).`
+      : `${who}'s copy holds <b>${fmt(s.events)}</b> edits. Replaying them, <b>${fmt(st.fastForwarded)}</b> were applied directly and <b>${fmt(st.tracked)}</b> needed temporary CRDT state, built ${st.sessions === 1 ? 'once' : `${fmt(st.sessions)} times`} and discarded (${ms}).`;
+
+  const rowsEl = document.getElementById('rows');
+  const runs = s.runs.slice().reverse(); // newest first
+  if (runs.length === 0) {
+    rowsEl.innerHTML = `<p class="history-empty">No edits yet.</p>`;
+    drawEdges([]);
+    return;
+  }
+  const lane = (agent) => Math.max(0, PEOPLE.findIndex((p) => p.agent === agent));
+  rowsEl.innerHTML = runs.map((run) => {
+    const merge = run.parents.length > 1;
+    const what = run.kind === 'ins'
+      ? `“${esc(visible(run.content))}”`
+      : `<span class="del">deleted ${plural(run.len, 'character', 'characters')}</span>`;
+    const ids = run.len === 1 ? `#${run.seq}` : `#${run.seq}–${run.seq + run.len - 1}`;
+    const cells = PEOPLE.map((p, i) => i === lane(run.agent)
+      ? `<div class="event ${p.agent}"><span class="dot${merge ? ' merge' : ''}"></span><span class="what">${what}</span><span class="ids">${ids}</span></div>`
+      : '<div></div>').join('');
+    return `<div class="row">${cells}</div>`;
+  }).join('') + (s.shownFrom > 0 ? `<p class="older">Older edits are not shown.</p>` : '');
+  drawEdges(runs);
+}
+
+function visible(text) {
+  return text.replace(/\n/g, '↵').replace(/ /g, ' ');
+}
+
+// Lines from each run to the runs it was based on. Drawn after layout, and again on resize.
+let lastRuns = [];
+function drawEdges(runs) {
+  lastRuns = runs;
+  const svg = document.getElementById('edges');
+  const box = document.getElementById('history').getBoundingClientRect();
+  const dots = [...document.querySelectorAll('#rows .dot')].map((d) => {
+    const r = d.getBoundingClientRect();
+    return { x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top };
+  });
+  // Half the distance from a row's dot to the next row's dot.
+  const rowGap = (i) => (i + 1 < dots.length ? (dots[i + 1].y - dots[i].y) / 2 : 18);
+  const rowOf = (agent, seq) => runs.findIndex((r) => r.agent === agent && seq >= r.seq && seq < r.seq + r.len);
+  let paths = '';
+  runs.forEach((run, i) => {
+    const a = dots[i];
+    for (const [agent, seq] of run.parents) {
+      const j = rowOf(agent, seq);
+      if (j >= 0) {
+        // Leave the child downwards, cross over in the gap below its row, then run
+        // down the parent's lane. Labels sit inside rows, so the line never crosses text.
+        const b = dots[j];
+        if (Math.abs(a.x - b.x) < 1) {
+          paths += `<path d="M${a.x},${a.y} L${b.x},${b.y}"/>`;
+        } else {
+          const gapY = a.y + rowGap(i);
+          const dir = b.x > a.x ? 1 : -1;
+          const r = Math.min(8, Math.abs(b.x - a.x) / 2);
+          paths += `<path d="M${a.x},${a.y} L${a.x},${gapY - r} Q${a.x},${gapY} ${a.x + dir * r},${gapY} L${b.x - dir * r},${gapY} Q${b.x},${gapY} ${b.x},${gapY + r} L${b.x},${b.y}"/>`;
+        }
+      } else {
+        paths += `<path class="cut" d="M${a.x},${a.y} L${a.x},${a.y + 22}"/>`;
+      }
+    }
+  });
+  svg.innerHTML = paths;
+}
+new ResizeObserver(() => drawEdges(lastRuns)).observe(document.getElementById('history'));
+
+// ---------- Scenarios ----------
+const typeAt = (r, pos, text) => { let p = pos; for (const ch of Array.from(text)) { applyLocal(r, p, 0, ch); p++; } };
+const findPos = (r, needle) => { const i = shown[r].indexOf(needle); return i < 0 ? 0 : Array.from(shown[r].slice(0, i)).length; };
+
+function reset(base = '') {
+  eg.reset(PEOPLE.map((p) => p.agent));
+  online.fill(true); waiting.fill(0); shown.fill('');
+  ui.forEach((u) => { u.editor.value = ''; });
+  if (base) typeAt(0, 0, base);
+  refresh(new Set([0, 1, 2]), -1);
+}
+
+const scenarios = {
+  reset() {
+    reset();
+    say('Everyone is connected and the document is empty.');
+  },
+  same() {
+    reset('Hello');
+    setOnline(0, false); setOnline(1, false);
+    typeAt(0, 5, ' world');
+    typeAt(1, 5, '!');
+    say('Alice and Bob are disconnected and both typed at the end of “Hello”. Reconnect both. They end up with the same text: when two insertions land at the same spot, the person whose name sorts first goes first.');
+  },
+  lists() {
+    reset('Shopping list:\n');
+    setOnline(0, false); setOnline(1, false);
+    typeAt(0, 15, '- milk\n- eggs\n');
+    typeAt(1, 15, '- coffee\n- bread\n');
+    say('Alice and Bob each wrote a list at the same spot while disconnected, one character at a time. Reconnect both. Each list stays together instead of being mixed letter by letter.');
+  },
+  rewrite() {
+    reset('The meeting is on Monday at 10.');
+    setOnline(2, false);
+    applyLocal(2, findPos(2, 'Monday'), 6, 'Tuesday');
+    typeAt(0, Array.from(shown[0]).length, ' Bring the slides.');
+    applyLocal(1, findPos(1, '10'), 2, '11');
+    say('Carol disconnected and changed “Monday” to “Tuesday”. Meanwhile Alice added a sentence and Bob changed the time. Reconnect Carol: all three changes are kept.');
+  },
+  big() {
+    reset('Start. ');
+    for (let r = 0; r < 3; r++) setOnline(r, false);
+    let seed = 7;
+    const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const t0 = performance.now();
+    for (let r = 0; r < 3; r++) {
+      let len = 7;
+      for (let i = 0; i < 5000; i++) {
+        eg.insert(r, rnd(len + 1), 'etaoinshrdlu '[rnd(12)]);
+        len++;
+      }
+      waiting[r] = 5000;
+    }
+    const typed = performance.now() - t0;
+    refresh(new Set([0, 1, 2]), -1);
+    say(`All three are disconnected and each made 5,000 random edits (${typed.toFixed(0)} ms in total). Reconnect them one by one. The summary under History shows how long it takes to replay all 15,000 edits once they meet.`);
+  },
+};
+function say(text) { noteEl.textContent = text; }
+
+document.querySelectorAll('[data-scenario]').forEach((b) =>
+  b.addEventListener('click', async () => {
+    if (!eg) await start(); // after a failure, "start over" reloads the engine
+    if (eg) guard(scenarios[b.dataset.scenario])();
+  }));
+
+// If the engine ever traps (a Swift precondition, out of memory), the module can't be
+// used any more. Stop using it, say so, and let "start over" load a fresh one.
+function guard(fn) {
+  return (...args) => {
+    try { return fn(...args); } catch (err) { fail(err); }
+  };
+}
+function fail(err) {
+  console.error(err);
+  eg = null;
+  ui.forEach((u) => { u.editor.disabled = true; });
+  statusEl.className = 'failed';
+  statusEl.textContent = `The engine stopped (${err.message}). Choose “start over” to load it again.`;
+}
+
+// ---------- Start ----------
+let wasmBytes = null;
+async function start() {
+  try {
+    if (!wasmBytes) {
+      const response = await fetch(new URL('./egwalker.wasm', import.meta.url));
+      if (!response.ok) throw new Error(`could not download the engine (HTTP ${response.status})`);
+      wasmBytes = await response.arrayBuffer();
+    }
+    eg = await loadEngine(wasmBytes);
+    statusEl.className = '';
+    statusEl.textContent = `The Swift engine is running in your browser. It started in ${eg.loadMs.toFixed(0)} ms.`;
+    ui.forEach((u) => { u.editor.disabled = false; });
+  } catch (err) {
+    console.error(err);
+    eg = null;
+    statusEl.className = 'failed';
+    statusEl.textContent = `The Swift engine could not start in this browser: ${err.message}. The demo needs WebAssembly.`;
+  }
+}
+
+await start();
+if (eg) guard(() => {
+  reset('Hello');
+  say('Everyone is connected, so every keystroke reaches the other two copies right away.');
+})();
+</script>
+</body>
+</html>
