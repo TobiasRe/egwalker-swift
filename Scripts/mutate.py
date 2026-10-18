@@ -92,7 +92,7 @@ def run(cmd, timeout, env=None):
     if env: e.update(env)
     try:
         p = subprocess.run(cmd, cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           timeout=timeout, text=True)
+                           timeout=timeout, text=True, errors="replace")
         return p.returncode, p.stdout
     except subprocess.TimeoutExpired as ex:
         return "timeout", (ex.stdout or "") if isinstance(ex.stdout, str) else ""
@@ -118,8 +118,16 @@ def main():
     rc, out = run(["swift", "test", "--skip-build", "--filter", GATE_FILTER], 600, GATE_ENV)
     assert rc == 0, "baseline gate failed:\n" + out[-3000:]
 
-    with open(results_path, "w") as f:
+    # Resume: keep results of mutants that were already run.
+    done = set()
+    if results_path.exists():
+        for l in open(results_path):
+            r = json.loads(l)
+            done.add((r["file"], r["line"], r["col"], r["op"]))
+    with open(results_path, "a") as f:
         for i, c in enumerate(cands):
+            if (c["file"], c["line"], c["col"], c["op"]) in done:
+                continue
             path = ROOT / c["file"]
             original = path.read_text()
             lines = original.splitlines(keepends=True)
