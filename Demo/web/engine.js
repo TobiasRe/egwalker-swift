@@ -73,7 +73,7 @@ export async function loadEngine(url) {
     const buffer = await response.arrayBuffer();
     ({ instance } = await WebAssembly.instantiate(buffer, imports));
   } else {
-    ({ instance } = await WebAssembly.instantiate(url, imports)); // raw bytes (Node)
+    ({ instance } = await WebAssembly.instantiate(url, imports)); // raw bytes
   }
   const ex = instance.exports;
   memory = ex.memory;
@@ -102,8 +102,10 @@ export async function loadEngine(url) {
     /** `dst` learns everything `src` knows. Returns the number of new events. */
     merge(dst, src) { return ex.eg_merge(dst, src); },
     eventCount(replica) { return ex.eg_event_count(replica); },
-    /** Replays the replica's history into text (`OpLog.checkout()`). */
+    /** The replica's current text, from its open document (`TextDocument.merge`). */
     text(replica) { return readResult(ex.eg_text(replica)); },
+    /** Replays the replica's whole history from scratch. Returns the character count. */
+    checkout(replica) { return ex.eg_checkout(replica); },
     /** Replays the replica's history: text, walker statistics and recent event runs. */
     state(replica, maxRuns = 80) { return JSON.parse(readResult(ex.eg_state(replica, maxRuns))); },
   };

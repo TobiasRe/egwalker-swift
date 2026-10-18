@@ -19,6 +19,9 @@ import Darwin
 
 nonisolated(unsafe) var replicas: [OpLog] = []
 nonisolated(unsafe) var agents: [String] = []
+/// One open document per replica, kept up to date with `TextDocument.merge`, which
+/// only processes events it hasn't seen (the way an editor would use the library).
+nonisolated(unsafe) var documents: [TextDocument] = []
 nonisolated(unsafe) var resultBytes: [UInt8] = []
 nonisolated(unsafe) var resultBuffer: UnsafeMutablePointer<UInt8>? = nil
 
@@ -57,6 +60,7 @@ func eg_result_len() -> Int32 { Int32(resultBytes.count) }
 func eg_reset(_ namesPtr: UnsafePointer<UInt8>?, _ namesLen: Int32) {
     agents = string(namesPtr, namesLen).split(separator: ",").map(String.init)
     replicas = agents.map { _ in OpLog() }
+    documents = agents.map { _ in TextDocument() }
 }
 
 @_expose(wasm, "eg_insert")
@@ -83,11 +87,22 @@ func eg_merge(_ dst: Int32, _ src: Int32) -> Int32 {
     return Int32(replicas[Int(dst)].count - before)
 }
 
-/// Replays replica `r` and returns its text as UTF-8.
+/// Brings replica `r`'s open document up to date (incrementally) and returns its
+/// text as UTF-8.
 @_expose(wasm, "eg_text")
 @_cdecl("eg_text")
 func eg_text(_ r: Int32) -> UnsafeMutablePointer<UInt8>? {
-    publish(Array(replicas[Int(r)].checkout().text.utf8))
+    let doc = documents[Int(r)]
+    doc.merge(replicas[Int(r)])
+    return publish(Array(doc.text.utf8))
+}
+
+/// Replays replica `r`'s whole history from scratch (`checkout()`), for timing.
+/// Returns the number of characters.
+@_expose(wasm, "eg_checkout")
+@_cdecl("eg_checkout")
+func eg_checkout(_ r: Int32) -> Int32 {
+    Int32(replicas[Int(r)].checkoutDocument().count)
 }
 
 @_expose(wasm, "eg_event_count")
