@@ -124,12 +124,12 @@ button { font: inherit; color: inherit; }
 #summary { color: var(--ink-soft); max-width: 72ch; }
 #summary b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .history { position: relative; }
-.history svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.history svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 0; }
 .lane-names { display: none; }
 .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; min-height: 40px; align-items: center; }
 .event { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding-left: 12px; }
 .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--who); transform: translateY(1px); position: relative; z-index: 1; }
-.dot.merge { background: var(--page); box-shadow: inset 0 0 0 2px var(--who); width: 12px; height: 12px; }
+.dot.merge { background: var(--page); box-shadow: inset 0 0 0 2px var(--who); }
 .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--doc); }
 .what .del { font-family: var(--ui); font-size: 14px; color: var(--ink-soft); }
 .ids { flex: none; font-size: 12.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
@@ -150,6 +150,7 @@ button { font: inherit; color: inherit; }
   .row, .lane-names { gap: 6px; }
   .event { padding-left: 4px; gap: 6px; }
   .ids { display: none; }
+  .del .long { display: none; }
 }
 </style>
 </head>
@@ -370,7 +371,7 @@ function renderHistory() {
     const merge = run.parents.length > 1;
     const what = run.kind === 'ins'
       ? `“${esc(visible(run.content))}”`
-      : `<span class="del">deleted ${plural(run.len, 'character', 'characters')}</span>`;
+      : `<span class="del">deleted ${fmt(run.len)}<span class="long"> character${run.len === 1 ? '' : 's'}</span></span>`;
     const ids = run.len === 1 ? `#${run.seq}` : `#${run.seq}–${run.seq + run.len - 1}`;
     const cells = PEOPLE.map((p, i) => i === lane(run.agent)
       ? `<div class="event ${p.agent}"><span class="dot${merge ? ' merge' : ''}"></span><span class="what">${what}</span><span class="ids">${ids}</span></div>`
@@ -406,8 +407,8 @@ function drawEdges(runs) {
         // Leave the child downwards, cross over in the gap below its row, then run
         // down the parent's lane. Labels sit inside rows, so the line never crosses text.
         const b = dots[j];
-        if (Math.abs(a.x - b.x) < 1) {
-          paths += `<path d="M${a.x},${a.y} L${b.x},${b.y}"/>`;
+        if (agent === run.agent) {
+          paths += `<path d="M${b.x},${a.y} L${b.x},${b.y}"/>`;
         } else {
           const gapY = a.y + rowGap(i);
           const dir = b.x > a.x ? 1 : -1;
