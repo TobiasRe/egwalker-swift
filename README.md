@@ -70,8 +70,25 @@ Scripts/mutate.py --limit 160               # mutation testing (see Benchmarks/m
 ## Benchmarks
 
 `Scripts/fetch-traces.sh` downloads the paper traces and diamond-types; `Scripts/bench.sh`
-runs both implementations interleaved on the same machine. Results:
-[Benchmarks/results/RESULTS.md](Benchmarks/results/RESULTS.md).
+runs both implementations interleaved on the same machine. Time is `checkout` of an
+already-loaded oplog (the paper's "merge" benchmark); heap is the peak heap growth during one
+checkout, measured with the same malloc tracker for both.
+
+Intel Xeon @ 2.1 GHz, Linux, 2 vCPUs (full output: [Benchmarks/results/RESULTS.md](Benchmarks/results/RESULTS.md)):
+
+| Trace | Ops | Swift | diamond-types | Speed-up | Peak heap Swift | Peak heap Rust |
+|---|---|---|---|---|---|---|
+| S1 | 779k | 1.98 ms | 4.05 ms | 2.05x | 0.33 MB | 1.39 MB |
+| S2 | 1.1M | 3.50 ms | 6.04 ms | 1.73x | 0.41 MB | 0.88 MB |
+| S3 | 2.3M | 5.49 ms | 8.21 ms | 1.50x | 1.17 MB | 0.86 MB |
+| C1 | 652k | 74.6 ms | 105.1 ms | 1.41x | 1.14 MB | 42.7 MB |
+| C2 | 608k | 107.3 ms | 153.6 ms | 1.43x | 1.63 MB | 50.4 MB |
+| A1 | 947k | 21.7 ms | 18.8 ms | 0.87x | 3.02 MB | 3.16 MB |
+| A2 | 698k | 53.8 ms | 50.5 ms | 0.94x | 6.99 MB | 5.83 MB |
+
+Swift wins on sequential (S) and moderately concurrent (C) histories; diamond-types is still
+6–13% faster on the heavily branched A traces. Release builds keep Swift's bounds and overflow
+checks on. Numbers on Apple Silicon have not been measured yet.
 
 ## Credits & license
 
