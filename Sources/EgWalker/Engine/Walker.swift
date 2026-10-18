@@ -22,7 +22,8 @@ final class Walker {
     // 1. `@exclusivity(unchecked)` turns off Swift's *dynamic* exclusivity checks
     //    for these fields. The walker is single-threaded and never passes these
     //    properties inout while also reading them, so the checks can never fire —
-    //    but they cost ~10% of the runtime in the hot loop.
+    //    but they cost a few percent of the runtime (1–4% re-measured, see
+    //    docs/performance.md).
     // 2. During `checkout()` we read the oplog through raw buffer pointers
     //    (`entries`, `parentPool`, `runs`). Going through the Swift arrays would
     //    retain/release their storage on every access; through pointers it's a

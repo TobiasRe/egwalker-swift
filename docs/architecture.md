@@ -193,4 +193,5 @@ Mitigations:
 
 Several hot class fields use `@exclusivity(unchecked)`. The walker is single-threaded and never
 passes those fields `inout` while reading them, so the runtime exclusivity checks can never
-fire. They cost 10–20% of runtime.
+fire. Re-measured on the current code, they cost 1–4% (see
+[performance → exclusivity](performance.md#exclusivity-re-measured)).

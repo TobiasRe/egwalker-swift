@@ -60,7 +60,7 @@ benchmark. They are listed in the order they were tried, including the ones that
 |---|---|---|---|
 | 1 | Parents moved from `[LV]` inside `CGEntry` to a shared pool | diff ~3× faster | A struct holding an array is reference-counted on every copy. Keep hot structs POD. |
 | 2 | Allocation-free tracker diff: a sorted `Int` array encoding `lv << 2 \| flag`, instead of `Dictionary` + heap | C1 195 → 150 ms | Hashing and generic tuple metadata cost more than a linear scan over 3 elements. |
-| 3 | `@exclusivity(unchecked)` on hot class fields | C1 150 → 71 ms | Swift checks exclusivity of class `var`s at runtime. Turn it off selectively, with a written justification. |
+| 3 | `@exclusivity(unchecked)` on hot class fields | C1 150 → 71 ms *as logged; not reproducible, see below* | Swift checks exclusivity of class `var`s at runtime. Re-measured on today's code the attribute is worth 1–4%. |
 | 4 | Raw buffer pointers to the oplog during a walk | fewer retain/release | `withUnsafeBufferPointer` around the whole walk; nothing escapes. |
 | 5 | Span split without aggregate propagation | A2 −15% | A split doesn't change any sum, so nothing needs to propagate. |
 | 6 | Greedy "follow the child" traversal order | **0%** | Hypothesis rejected. `Scripts/simulate-order.py` showed why. |
@@ -93,6 +93,26 @@ On the C traces, depth-first order does slightly *less* tracker movement but run
 slower. The likely cause is cache locality, which we have not verified. Regions with fewer than
 64 entries therefore use LV order. The threshold comes from a sweep on the paper traces; it is
 a heuristic, not a model. Override it with `EGWALKER_DFS_MIN` for experiments.
+
+## Exclusivity, re-measured
+
+The optimisation log credits `@exclusivity(unchecked)` with C1 150 → 71 ms. That number came
+from a single development measurement and could not be reproduced. Re-measured on the current
+code (commit 1b2f6ba) by building the benchmark twice, once as is and once with every
+`@exclusivity(unchecked)` attribute removed, run interleaved, 3 rounds × 25 iterations:
+
+| Trace | Unchecked (median) | Checked (median) | Cost of the checks |
+|---|---|---|---|
+| S1 | 2.0 ms | 2.0 ms | ~0% |
+| C1 | 75.1 ms | 78.4 ms | +4% |
+| C2 | 111.5 ms | 114.8 ms | +3% |
+| A1 | 20.4 ms | 20.5 ms | +1% |
+| A2 | 53.1 ms | 53.8 ms | +1% |
+
+Both builds produce correct output on every run. The likely reason the effect shrank is that the
+later walker rewrite reads the oplog through raw pointers and local copies, leaving few checked
+accesses in the hot loop. That explanation has not been verified. Raw output:
+[`Benchmarks/results/exclusivity-ab.txt`](../Benchmarks/results/exclusivity-ab.txt).
 
 ## Profiling recipes
 

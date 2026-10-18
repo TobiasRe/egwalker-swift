@@ -63,7 +63,9 @@ AddressSanitizer runs, and the reference oracle.
 
 ## D6. `@exclusivity(unchecked)` on selected fields
 
-**Context.** Runtime exclusivity checks on class properties cost 10–20% in the hot loop.
+**Context.** Runtime exclusivity checks on class properties showed up in the hot loop. On the
+current code they cost 1–4% ([measurement](performance.md#exclusivity-re-measured)); the
+original estimate of 10–20% does not hold up.
 
 **Decision.** Disable them for specific fields of `Walker`, `ItemTree` and `GapBuffer`, each
 with a comment. Keep all other runtime checks, including bounds and overflow checks in release.
