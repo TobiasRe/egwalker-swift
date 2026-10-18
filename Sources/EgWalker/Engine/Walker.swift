@@ -424,3 +424,24 @@ extension OpLog {
         return (Branch(scalars: doc.scalars).text, walker.stats)
     }
 }
+
+/// A checked-out document: the text produced by replaying an oplog.
+public final class TextDocument: @unchecked Sendable {
+    let buffer: GapBuffer
+    public let version: [LV]
+    init(buffer: GapBuffer, version: [LV]) { self.buffer = buffer; self.version = version }
+    /// Length in Unicode scalars.
+    public var count: Int { buffer.count }
+    public var scalars: [Unicode.Scalar] { buffer.scalars }
+    public var text: String { Branch(scalars: buffer.scalars).text }
+}
+
+extension OpLog {
+    /// Replays the oplog into a `TextDocument` without materialising a String.
+    public func checkoutDocument() -> TextDocument {
+        let doc = GapBuffer(capacity: Swift.max(64, count / 8))
+        let walker = Walker(oplog: self, doc: doc)
+        walker.checkout()
+        return TextDocument(buffer: doc, version: cg.heads)
+    }
+}
